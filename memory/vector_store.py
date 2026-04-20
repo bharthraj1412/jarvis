@@ -55,14 +55,23 @@ class VectorMemory:
             return
 
         try:
-            ef = SentenceTransformerEmbeddingFunction(
-                model_name="all-MiniLM-L6-v2"
-            )
-            client = chromadb.PersistentClient(path=_DB_PATH)
-            self._collection = client.get_or_create_collection(
-                name=collection_name,
-                embedding_function=ef,
-            )
+            import os
+            import contextlib
+            
+            # Suppress noisy huggingface/transformers load output
+            os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+            os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+            os.environ["TRANSFORMERS_VERBOSITY"] = "error"
+            
+            with open(os.devnull, "w") as f, contextlib.redirect_stdout(f), contextlib.redirect_stderr(f):
+                ef = SentenceTransformerEmbeddingFunction(
+                    model_name="all-MiniLM-L6-v2"
+                )
+                client = chromadb.PersistentClient(path=_DB_PATH)
+                self._collection = client.get_or_create_collection(
+                    name=collection_name,
+                    embedding_function=ef,
+                )
             self._available = True
         except Exception as e:
             print(f"[VectorMemory] ⚠️  Initialisation failed: {e}")
