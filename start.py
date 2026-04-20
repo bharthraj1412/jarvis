@@ -1,19 +1,8 @@
-# start.py — JARVIS MK37 Unified Launcher (v2)
+# start.py — JARVIS MK37 Unified Launcher (v3)
 from __future__ import annotations
 """
-Production-grade launcher for JARVIS MK37.
-Includes full system diagnostics, dependency verification, health checks,
-and graceful process lifecycle management.
-
-Usage:
-    python start.py              → Interactive mode selector
-    python start.py voice        → Voice assistant only (Gemini Live Audio GUI)
-    python start.py cli          → CLI only (Rich terminal + multi-backend ReAct)
-    python start.py both         → Both voice GUI + CLI in parallel
-    python start.py --silent     → Auto-start voice (used by Windows Startup)
-    python start.py --status     → Full system diagnostics
-    python start.py --doctor     → Check + auto-install missing dependencies
-    python start.py --version    → Show version info
+Production-grade launcher mapping to the complete suite.
+Features Rich TUI for Windows-compatible colorization.
 """
 
 import importlib
@@ -23,9 +12,32 @@ import platform
 import signal
 import subprocess
 import sys
-import time
 from datetime import datetime
 from pathlib import Path
+
+# Fix terminal encoding issues on Windows
+if sys.platform == "win32":
+    os.environ["PYTHONIOENCODING"] = "utf-8"
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+# Setup Rich formatting
+try:
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.text import Text
+    from rich.prompt import Prompt
+    from rich.live import Live
+    from rich import print as rprint
+    console = Console()
+except ImportError:
+    # Very basic fallback if rich isn't installed (though it should be for JARVIS)
+    print("Oops! 'rich' module is missing. Please run: pip install rich")
+    sys.exit(1)
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -38,79 +50,33 @@ PYTHON   = sys.executable
 LOG_DIR  = BASE_DIR / "logs"
 PID_FILE = BASE_DIR / ".jarvis.pid"
 
-# Force UTF-8 on Windows
-if sys.platform == "win32":
-    os.environ["PYTHONIOENCODING"] = "utf-8"
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
-
-
-# ── ANSI Helpers ─────────────────────────────────────────────────────────────
-
-def _supports_color() -> bool:
-    if sys.platform == "win32":
-        os.system("")  # enable VT100 escape sequences on Windows 10+
-        return True
-    return hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
-
-_COLOR = _supports_color()
-
-def _c(code: str, text: str) -> str:
-    return f"\033[{code}m{text}\033[0m" if _COLOR else text
-
-def _bold(t: str) -> str:       return _c("1", t)
-def _dim(t: str) -> str:        return _c("2", t)
-def _cyan(t: str) -> str:       return _c("36", t)
-def _green(t: str) -> str:      return _c("32", t)
-def _yellow(t: str) -> str:     return _c("33", t)
-def _red(t: str) -> str:        return _c("31", t)
-def _magenta(t: str) -> str:    return _c("35", t)
-def _blue(t: str) -> str:       return _c("34", t)
-def _white_bold(t: str) -> str: return _c("1;37", t)
-
-_OK   = _green("✓")
-_WARN = _yellow("⚠")
-_FAIL = _red("✗")
-_SKIP = _dim("○")
-_DOT  = _dim("·")
-
-
 # ── Banner ───────────────────────────────────────────────────────────────────
 
 def _banner():
+    console.clear()
     now = datetime.now().strftime("%A, %B %d, %Y — %I:%M %p")
-    lines = [
-        "",
-        _cyan("  ╔══════════════════════════════════════════════════════╗"),
-        _cyan("  ║") + _white_bold("        J.A.R.V.I.S  —  MARK XXXVII               ") + _cyan("║"),
-        _cyan("  ║") + _dim("        Just A Rather Very Intelligent System       ") + _cyan("║"),
-        _cyan("  ╠══════════════════════════════════════════════════════╣"),
-        _cyan("  ║") + f"  Version : {_green(VERSION)}  {_dim('|')}  Build : {_dim(BUILD)}            " + _cyan("║"),
-        _cyan("  ║") + f"  Python  : {_green(sys.version.split()[0])}   {_dim('|')}  Platform: {_dim(platform.system())}         " + _cyan("║"),
-        _cyan("  ║") + f"  {_dim(now)}" + " " * max(0, 53 - len(now)) + _cyan("║"),
-        _cyan("  ╚══════════════════════════════════════════════════════╝"),
-        "",
-    ]
-    for line in lines:
-        print(line)
+    text = Text(justify="center")
+    text.append("\nJ.A.R.V.I.S  —  MARK XXXVII\n", style="bold cyan")
+    text.append("Just A Rather Very Intelligent System\n\n", style="dim")
+    text.append(f"Version: {VERSION} | Build: {BUILD}\n", style="bold green")
+    text.append(f"Python: {sys.version.split()[0]} | Platform: {platform.system()}\n", style="green")
+    text.append(now, style="dim")
+    
+    panel = Panel(text, border_style="cyan", expand=False, padding=(1, 4))
+    console.print(panel)
+    console.print()
 
-
-# ── Dependency & Environment Checks ──────────────────────────────────────────
+# ── Status and Check Helpers ──────────────────────────────────────────────────
 
 def _check_env() -> dict:
     """Check environment configuration and return status dict."""
     status = {"env_file": False, "config_file": False, "api_keys": {}}
-
     env_file    = BASE_DIR / ".env"
     config_file = BASE_DIR / "config" / "api_keys.json"
 
     status["env_file"]    = env_file.exists()
     status["config_file"] = config_file.exists()
 
-    # Load .env if python-dotenv is available
     try:
         import dotenv
         if env_file.exists():
@@ -118,7 +84,6 @@ def _check_env() -> dict:
     except ImportError:
         pass
 
-    # Check API keys
     key_map = {
         "GEMINI_API_KEY":    "Gemini",
         "GOOGLE_API_KEY":    "Gemini (alt)",
@@ -131,7 +96,6 @@ def _check_env() -> dict:
         val = os.environ.get(env_key, "")
         status["api_keys"][label] = bool(val and len(val) > 5)
 
-    # Also check config/api_keys.json
     if config_file.exists():
         try:
             with open(config_file, "r") as f:
@@ -143,9 +107,7 @@ def _check_env() -> dict:
 
     return status
 
-
 def _check_module(name: str) -> tuple[bool, str]:
-    """Check if a Python module is importable. Returns (ok, version_or_error)."""
     try:
         mod = importlib.import_module(name)
         ver = getattr(mod, "__version__", "OK")
@@ -153,487 +115,253 @@ def _check_module(name: str) -> tuple[bool, str]:
     except ImportError as e:
         return False, str(e)
 
-
-# ── System Diagnostics ───────────────────────────────────────────────────────
+# ── Health Diagnostic Command ─────────────────────────────────────────────────
 
 def show_status():
-    """Comprehensive system health report."""
     _banner()
     env = _check_env()
 
-    # ── Environment
-    print(_bold("  ── Environment ─────────────────────────────────────"))
-    print(f"   Base Directory  : {_dim(str(BASE_DIR))}")
-    print(f"   Python          : {_green(sys.version.split()[0])} ({_dim(sys.executable)})")
-    print(f"   Platform        : {platform.system()} {platform.release()}")
-
+    # Environment
+    table_env = Table(title="Environment", title_style="bold magenta", show_header=False, box=None)
+    table_env.add_column("Property", style="bold")
+    table_env.add_column("Value")
+    table_env.add_row("Base Dir", str(BASE_DIR))
+    table_env.add_row("Python Exec", sys.executable)
     venv = hasattr(sys, "real_prefix") or (hasattr(sys, "base_prefix") and sys.base_prefix != sys.prefix)
-    print(f"   Virtual Env     : {_green('Active') if venv else _yellow('Not detected')}")
-
-    env_icon = _OK if env["env_file"] else _FAIL
-    cfg_icon = _OK if env["config_file"] else _WARN
-    print(f"   .env file       : {env_icon} {'Found' if env['env_file'] else 'MISSING'}")
-    print(f"   config/api_keys : {cfg_icon} {'Found' if env['config_file'] else 'Optional — not found'}")
-    print()
-
-    # ── API Keys / Backends
-    print(_bold("  ── Backends ────────────────────────────────────────"))
+    table_env.add_row("Virtual Env", "[green]Active[/]" if venv else "[yellow]Not detected[/]")
+    table_env.add_row("Env File", "[green]✓ Found[/]" if env["env_file"] else "[red]✗ MISSING[/]")
+    
+    # Backends
+    table_be = Table(title="Backends", title_style="bold magenta", show_header=False, box=None)
     has_any = False
     for label, ok in env["api_keys"].items():
-        if "alt" in label and not ok:
-            continue  # don't show alt key if not set
-        icon = _OK if ok else _SKIP
-        status_txt = _green("Configured") if ok else _dim("Not configured")
-        print(f"   {icon} {label:14s} : {status_txt}")
-        if ok:
-            has_any = True
+        if "alt" in label and not ok: continue
+        table_be.add_row(f"[green]✓ {label}[/]" if ok else f"[dim]○ {label}[/]", "[green]Configured[/]" if ok else "[dim]Not Configured[/]")
+        if ok: has_any = True
 
-    # Check Ollama
     ollama_host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
     try:
         import urllib.request
         req = urllib.request.Request(f"{ollama_host}/api/tags", method="GET")
-        with urllib.request.urlopen(req, timeout=2) as resp:
-            print(f"   {_OK} {'Ollama':14s} : {_green('Running')} at {_dim(ollama_host)}")
+        with urllib.request.urlopen(req, timeout=1) as resp:
+            table_be.add_row(f"[green]✓ Ollama[/]", f"[green]Running[/] at {ollama_host}")
             has_any = True
     except Exception:
-        print(f"   {_SKIP} {'Ollama':14s} : {_dim('Not running')} ({_dim(ollama_host)})")
+        table_be.add_row(f"[dim]○ Ollama[/]", f"[dim]Not Running ({ollama_host})[/]")
 
-    if not has_any:
-        print(f"\n   {_WARN} {_yellow('No backends configured! Add at least one API key to .env')}")
-    print()
-
-    # ── Core Modules
-    print(_bold("  ── Core Modules ────────────────────────────────────"))
+    # Modules
+    table_mod = Table(title="Core Modules", title_style="bold magenta", show_header=False, box=None)
     core_modules = [
-        ("google.genai",     "Google GenAI SDK"),
-        ("sounddevice",      "Audio I/O"),
-        ("requests",         "HTTP Client"),
-        ("httpx",            "Async HTTP"),
-        ("PIL",              "Image Processing"),
-        ("numpy",            "Numerics"),
-        ("psutil",           "System Monitor"),
+        ("google.genai", "Google GenAI SDK"), ("sounddevice", "Audio I/O"), 
+        ("requests", "HTTP Client"), ("httpx", "Async HTTP"),
+        ("PIL", "Image Processing"), ("numpy", "Numerics"), ("psutil", "System Monitor")
     ]
     core_ok = 0
     for mod_name, label in core_modules:
         ok, ver = _check_module(mod_name)
         if ok:
-            print(f"   {_OK} {label:20s} {_dim(ver)}")
+            table_mod.add_row(f"[green]✓ {label}[/]", f"[dim]{ver}[/]")
             core_ok += 1
         else:
-            print(f"   {_FAIL} {label:20s} {_red('MISSING')} — pip install {mod_name}")
-    print()
-
-    # ── Optional Modules
-    print(_bold("  ── Optional Modules ────────────────────────────────"))
-    optional_modules = [
-        ("chromadb",                "ChromaDB Vector Store"),
-        ("sentence_transformers",   "Sentence Transformers"),
-        ("youtube_transcript_api",  "YouTube Transcripts"),
-        ("anthropic",               "Anthropic SDK"),
-        ("openai",                  "OpenAI SDK"),
-        ("mistralai",               "Mistral SDK"),
-        ("pyautogui",               "Desktop Automation"),
-        ("rich",                    "Rich Terminal UI"),
-        ("playwright",              "Browser Automation"),
-    ]
-    for mod_name, label in optional_modules:
-        ok, ver = _check_module(mod_name)
-        if ok:
-            print(f"   {_OK} {label:24s} {_dim(ver)}")
-        else:
-            print(f"   {_SKIP} {label:24s} {_dim('Not installed (optional)')}")
-    print()
-
-    # ── Skills & Agents
-    print(_bold("  ── Skills & Agents ─────────────────────────────────"))
+            table_mod.add_row(f"[red]✗ {label}[/]", "[red]MISSING[/]")
+            
+    table_sys = Table(title="System & Memory", title_style="bold magenta", show_header=False, box=None)
     try:
         sys.path.insert(0, str(BASE_DIR))
         from skills import load_skills
-        skills = load_skills()
-        print(f"   {_OK} Skills loaded    : {_green(str(len(skills)))}")
-    except Exception as e:
-        print(f"   {_FAIL} Skills           : {_red(str(e)[:60])}")
-
-    try:
+        table_sys.add_row("[green]✓ Skills Loaded[/]", str(len(load_skills())))
+        
         from multi_agent.subagent import load_agent_definitions
-        defs = load_agent_definitions()
-        print(f"   {_OK} Agent types      : {_green(str(len(defs)))} ({_dim(', '.join(sorted(defs.keys())))})")
-    except Exception as e:
-        print(f"   {_FAIL} Agent types      : {_red(str(e)[:60])}")
-
-    try:
+        table_sys.add_row("[green]✓ Agent Types[/]", str(len(load_agent_definitions())))
+        
         from tools.registry import TOOL_SCHEMAS
-        print(f"   {_OK} Tools registered : {_green(str(len(TOOL_SCHEMAS)))}")
-    except Exception as e:
-        print(f"   {_FAIL} Tools            : {_red(str(e)[:60])}")
-    print()
-
-    # ── Memory
-    print(_bold("  ── Memory ──────────────────────────────────────────"))
+        table_sys.add_row("[green]✓ Tools Registered[/]", str(len(TOOL_SCHEMAS)))
+    except Exception:
+        pass
+        
     try:
         from memory.vector_store import VectorMemory
         vm = VectorMemory()
-        if vm.available:
-            print(f"   {_OK} Vector memory    : {_green('Operational')}")
-        else:
-            print(f"   {_WARN} Vector memory    : {_yellow('Degraded (chromadb unavailable)')}")
-    except Exception as e:
-        print(f"   {_FAIL} Vector memory    : {_red(str(e)[:60])}")
+        table_sys.add_row("[green]✓ Vector Memory[/]" if vm.available else "[yellow]⚠ Vector Memory[/]", "[green]Operational[/]" if vm.available else "[yellow]Degraded[/]")
+    except Exception:
+        pass
 
-    mem_dir = Path.home() / ".jarvis" / "memory"
-    if mem_dir.exists():
-        mem_count = len(list(mem_dir.glob("*.md")))
-        print(f"   {_OK} Persistent store : {_green(f'{mem_count} memories')} in {_dim(str(mem_dir))}")
-    else:
-        print(f"   {_SKIP} Persistent store : {_dim('No memories saved yet')}")
+    console.print(table_env)
+    console.print()
+    if not has_any:
+        console.print("[bold yellow]⚠ No backends configured. AI chat will not work. Add keys to .env[/]")
+    console.print(table_be)
+    console.print()
+    console.print(table_mod)
+    console.print()
+    console.print(table_sys)
+    console.print()
 
-    history_db = BASE_DIR / "history"
-    if history_db.exists():
-        db_files = list(history_db.glob("*.db")) + list(history_db.glob("*.sqlite3"))
-        if db_files:
-            print(f"   {_OK} Session history  : {_green(f'{len(db_files)} database(s)')}")
-        else:
-            print(f"   {_SKIP} Session history  : {_dim('No sessions recorded yet')}")
-    print()
-
-    # ── Summary
-    total_checks = len(core_modules)
-    pct = int(core_ok / total_checks * 100) if total_checks else 0
-    if pct == 100:
-        summary = _green(f"System health: {pct}% — All core modules operational")
-    elif pct >= 70:
-        summary = _yellow(f"System health: {pct}% — Some modules missing")
-    else:
-        summary = _red(f"System health: {pct}% — Critical modules missing")
-
-    print(_bold("  ── Summary ─────────────────────────────────────────"))
-    print(f"   {summary}")
-    print()
-
-
-# ── Doctor (auto-fix) ────────────────────────────────────────────────────────
+# ── Dependencies Doctor ────────────────────────────────────────────────────────
 
 def doctor():
-    """Check dependencies and attempt to install missing ones."""
     _banner()
-    print(_bold("  ── JARVIS Doctor — Dependency Check & Auto-Fix ────"))
-    print()
+    console.print("[bold magenta]JARVIS Doctor — Dependency Fix[/]\n")
 
-    required = {
-        "google-genai":       "google.genai",
-        "sounddevice":        "sounddevice",
-        "requests":           "requests",
-        "httpx":              "httpx",
-        "Pillow":             "PIL",
-        "numpy":              "numpy",
-        "psutil":             "psutil",
-    }
-    recommended = {
-        "chromadb":               "chromadb",
-        "sentence-transformers":  "sentence_transformers",
-        "youtube-transcript-api": "youtube_transcript_api",
-        "pyautogui":              "pyautogui",
-        "pyperclip":              "pyperclip",
-        "rich":                   "rich",
-        "python-dotenv":          "dotenv",
-        "duckduckgo-search":      "duckduckgo_search",
-        "pyyaml":                 "yaml",
-    }
-
-    missing_required    = []
-    missing_recommended = []
-
-    print(_bold("  Required:"))
+    required = {"google-genai": "google.genai", "sounddevice": "sounddevice", "requests": "requests", 
+                "httpx": "httpx", "Pillow": "PIL", "numpy": "numpy", "psutil": "psutil"}
+    
+    missing = []
+    
+    table = Table(title="Required Dependencies", box=None)
+    table.add_column("Package", style="bold")
+    table.add_column("Status")
+    
     for pip_name, import_name in required.items():
         ok, ver = _check_module(import_name)
         if ok:
-            print(f"   {_OK} {pip_name:30s} {_dim(ver)}")
+            table.add_row(pip_name, f"[green]✓ Installed[/] [dim]({ver})[/]")
         else:
-            print(f"   {_FAIL} {pip_name:30s} {_red('MISSING')}")
-            missing_required.append(pip_name)
-
-    print()
-    print(_bold("  Recommended:"))
-    for pip_name, import_name in recommended.items():
-        ok, ver = _check_module(import_name)
-        if ok:
-            print(f"   {_OK} {pip_name:30s} {_dim(ver)}")
-        else:
-            print(f"   {_SKIP} {pip_name:30s} {_dim('Not installed')}")
-            missing_recommended.append(pip_name)
-
-    print()
-
-    all_missing = missing_required + missing_recommended
-    if not all_missing:
-        print(f"   {_green('All dependencies satisfied. System is ready.')}")
+            table.add_row(pip_name, "[red]✗ MISSING[/]")
+            missing.append(pip_name)
+            
+    console.print(table)
+    console.print()
+    
+    if not missing:
+        console.print("[bold green]System is healthy. All dependencies met.[/]")
         return
+        
+    console.print(f"[bold red]{len(missing)} required packages missing.[/]")
+    if Prompt.ask("Install missing packages now?", choices=["y", "n"], default="y") == "y":
+        console.print("\nInstalling...")
+        for pkg in missing:
+            console.print(f"  [dim]Installing[/] {pkg}...")
+            result = subprocess.run([PYTHON, "-m", "pip", "install", pkg, "--quiet"], capture_output=True)
+            if result.returncode == 0:
+                console.print(f"  [green]✓ {pkg} installed[/]")
+            else:
+                console.print(f"  [red]✗ Failed to install {pkg}[/]")
+        console.print("\n[bold green]Scan complete.[/]")
 
-    if missing_required:
-        print(f"   {_red(f'{len(missing_required)} required package(s) missing.')}")
-    if missing_recommended:
-        print(f"   {_yellow(f'{len(missing_recommended)} recommended package(s) missing.')}")
-
-    print()
-    try:
-        answer = input(f"   Install {'all' if missing_recommended else 'required'} missing packages? (y/n): ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        print(f"\n   {_dim('Cancelled.')}")
-        return
-
-    if answer not in ("y", "yes"):
-        if missing_required:
-            print(f"\n   {_yellow('Run manually:')} pip install {' '.join(missing_required)}")
-        return
-
-    to_install = missing_required if answer == "y" else all_missing
-    if missing_recommended and answer in ("y", "yes"):
-        to_install = all_missing
-
-    print()
-    print(f"   Installing {len(to_install)} package(s)...")
-    print()
-
-    for pkg in to_install:
-        sys.stdout.write(f"   {_DOT} {pkg:30s} ")
-        sys.stdout.flush()
-        result = subprocess.run(
-            [PYTHON, "-m", "pip", "install", pkg, "--quiet"],
-            capture_output=True, text=True,
-        )
-        if result.returncode == 0:
-            print(_green("installed"))
-        else:
-            err = result.stderr.strip().split("\n")[-1] if result.stderr else "unknown error"
-            print(_red(f"FAILED — {err[:50]}"))
-
-    print()
-    print(f"   {_green('Done.')} Re-run {_cyan('python start.py --status')} to verify.")
-    print()
-
-
-# ── Process Launchers ────────────────────────────────────────────────────────
+# ── Process Execution ─────────────────────────────────────────────────────────
 
 def _ensure_log_dir():
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-
 def _write_pid(pid: int, mode: str):
-    """Write PID info for process tracking."""
     try:
         data = {"pid": pid, "mode": mode, "started": datetime.now().isoformat()}
         PID_FILE.write_text(json.dumps(data), encoding="utf-8")
     except Exception:
         pass
 
-
 def _clear_pid():
-    try:
-        PID_FILE.unlink(missing_ok=True)
-    except Exception:
-        pass
-
+    try: PID_FILE.unlink(missing_ok=True)
+    except Exception: pass
 
 def _pre_launch_check() -> bool:
-    """Run quick health check before launching."""
     env = _check_env()
-    has_key = any(env["api_keys"].values())
-
-    if not has_key:
-        print(f"   {_WARN} {_yellow('No API keys detected.')}")
-        print(f"      Copy {_cyan('.env.template')} to {_cyan('.env')} and add your Gemini API key.")
-        print()
-        try:
-            answer = input("   Continue anyway? (y/n): ").strip().lower()
-            if answer not in ("y", "yes"):
-                return False
-        except (EOFError, KeyboardInterrupt):
+    if not any(env["api_keys"].values()):
+        console.print("\n[bold yellow]⚠ No API keys detected![/]")
+        console.print("  Duplicate [cyan].env.template[/] as [cyan].env[/] and insert your Gemini API Key.")
+        if Prompt.ask("Continue anyway?", choices=["y", "n"], default="n") != "y":
             return False
     return True
 
-
 def launch_voice():
-    """Launch the Tkinter GUI voice assistant (main.py)."""
-    print(f"   {_cyan('▶')} Starting Voice Assistant (Gemini Live Audio)...")
-    print(f"   {_dim('Press Ctrl+C to stop')}")
-    print()
-    try:
-        proc = subprocess.run([PYTHON, str(BASE_DIR / "main.py")], cwd=str(BASE_DIR))
-        return proc.returncode
-    except KeyboardInterrupt:
-        print(f"\n   {_dim('Voice assistant stopped.')}")
-        return 0
-
+    console.print("\n[bold cyan]▶ Starting Voice Assistant (Gemini Live GUI)[/]")
+    console.print("[dim]Note: The GUI will open in a new window. Press Ctrl+C to stop.[/]\n")
+    try: subprocess.run([PYTHON, str(BASE_DIR / "main.py")], cwd=str(BASE_DIR))
+    except KeyboardInterrupt: console.print("\n[dim]Voice assistant stopped.[/]")
 
 def launch_cli():
-    """Launch the Rich CLI assistant (main_mk37.py)."""
-    print(f"   {_cyan('▶')} Starting CLI Assistant (Multi-Backend ReAct)...")
-    print(f"   {_dim('Type /quit to exit')}")
-    print()
-    try:
-        proc = subprocess.run([PYTHON, str(BASE_DIR / "main_mk37.py")], cwd=str(BASE_DIR))
-        return proc.returncode
-    except KeyboardInterrupt:
-        print(f"\n   {_dim('CLI stopped.')}")
-        return 0
+    console.print("\n[bold cyan]▶ Starting CLI Orchestrator[/]")
+    console.print("[dim]Type /quit to exit.[/]\n")
+    try: subprocess.run([PYTHON, str(BASE_DIR / "main_mk37.py")], cwd=str(BASE_DIR))
+    except KeyboardInterrupt: console.print("\n[dim]CLI stopped.[/]")
 
+def launch_screen_share():
+    console.print("\n[bold cyan]▶ Starting Screen Share Server[/]")
+    viewer_path = BASE_DIR / "screen_server" / "viewer.html"
+    console.print(f"  [green]Server Running on[/] ws://localhost:8765")
+    console.print(f"  [green]Viewer Interface[/]  Access [cyan]file:///{viewer_path}[/]")
+    console.print("[dim]Press Ctrl+C to shut down.[/]\n")
+    try: subprocess.run([PYTHON, str(BASE_DIR / "screen_server" / "ws_server.py")], cwd=str(BASE_DIR))
+    except KeyboardInterrupt: console.print("\n[dim]Screen Share shutdown.[/]")
 
 def launch_both():
-    """Launch voice in a subprocess, CLI in the main process."""
-    print(f"   {_cyan('▶')} Starting BOTH modes in parallel...")
-    print()
-
+    console.print("\n[bold cyan]▶ Starting Modes in Parallel[/]\n")
     _ensure_log_dir()
     voice_log = LOG_DIR / f"voice_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
-    # Launch voice as a detached process with logging
-    popen_kwargs = {
-        "cwd":    str(BASE_DIR),
-        "stdout": open(voice_log, "w", encoding="utf-8"),
-        "stderr": subprocess.STDOUT,
-    }
-    if sys.platform == "win32":
-        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-
-    voice_proc = subprocess.Popen(
-        [PYTHON, str(BASE_DIR / "main.py")],
-        **popen_kwargs,
-    )
-
-    print(f"   {_OK} Voice GUI started  (PID: {_green(str(voice_proc.pid))})")
-    print(f"   {_dim(f'   Voice log: {voice_log}')}")
-    _write_pid(voice_proc.pid, "voice+cli")
-    print(f"   {_cyan('▶')} CLI launching in foreground...\n")
-
-    try:
-        subprocess.run([PYTHON, str(BASE_DIR / "main_mk37.py")], cwd=str(BASE_DIR))
-    except KeyboardInterrupt:
-        print(f"\n   {_dim('CLI interrupted.')}")
+    kwargs = {"cwd": str(BASE_DIR), "stdout": open(voice_log, "w", encoding="utf-8"), "stderr": subprocess.STDOUT}
+    if sys.platform == "win32": kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    
+    vproc = subprocess.Popen([PYTHON, str(BASE_DIR / "main.py")], **kwargs)
+    console.print(f"  [green]✓ Voice GUI Started[/] (PID: {vproc.pid})")
+    console.print(f"    [dim]Logs: {voice_log}[/]")
+    _write_pid(vproc.pid, "voice+cli")
+    
+    console.print("\n  [cyan]Launching CLI...[/]\n")
+    try: subprocess.run([PYTHON, str(BASE_DIR / "main_mk37.py")], cwd=str(BASE_DIR))
+    except KeyboardInterrupt: console.print("\n[dim]CLI closed.[/]")
     finally:
-        # When CLI exits, cleanly terminate voice
-        print(f"\n   Shutting down voice GUI (PID: {voice_proc.pid})...", end=" ")
+        console.print(f"  [dim]Shutting down Voice GUI (PID: {vproc.pid})...[/]", end=" ")
         try:
-            voice_proc.terminate()
-            voice_proc.wait(timeout=5)
-            print(_green("done"))
+            vproc.terminate()
+            vproc.wait(timeout=5)
+            console.print("[green]Done.[/]")
         except subprocess.TimeoutExpired:
-            voice_proc.kill()
-            print(_yellow("force-killed"))
+            vproc.kill()
+            console.print("[yellow]Force Killed.[/]")
         except Exception:
-            print(_dim("already stopped"))
+            console.print("[dim]Ignored.[/]")
         _clear_pid()
 
-        # Close log file handle
-        try:
-            voice_proc.stdout.close()
-        except Exception:
-            pass
-
-
 def launch_silent():
-    """Silent auto-start mode — used by Windows Startup."""
     _ensure_log_dir()
-    voice_log = LOG_DIR / f"voice_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-
+    voice_log = LOG_DIR / f"voice_silent_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     try:
-        popen_kwargs = {
-            "cwd":    str(BASE_DIR),
-            "stdout": open(voice_log, "w", encoding="utf-8"),
-            "stderr": subprocess.STDOUT,
-        }
-        if sys.platform == "win32":
-            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-
-        proc = subprocess.Popen(
-            [PYTHON, str(BASE_DIR / "main.py")],
-            **popen_kwargs,
-        )
+        kwargs = {"cwd": str(BASE_DIR), "stdout": open(voice_log, "w", encoding="utf-8"), "stderr": subprocess.STDOUT}
+        if sys.platform == "win32": kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        proc = subprocess.Popen([PYTHON, str(BASE_DIR / "main.py")], **kwargs)
         _write_pid(proc.pid, "silent")
-        # Don't print in silent mode — this runs at Windows login
-    except Exception:
-        pass  # silent = no output on failure
-
-
-def show_version():
-    """Print version info."""
-    print(f"  JARVIS {CODENAME} v{VERSION} (build {BUILD})")
-    print(f"  Python {sys.version.split()[0]} on {platform.system()} {platform.release()}")
-    print()
-
-
-# ── Interactive Menu ─────────────────────────────────────────────────────────
-
-def _interactive_menu() -> str:
-    """Show interactive mode selection menu."""
-    print(_bold("  Select launch mode:\n"))
-    print(f"    {_cyan('[1]')}  {_bold('VOICE')}    — Gemini Live Audio GUI       {_dim('(main.py)')}")
-    print(f"    {_cyan('[2]')}  {_bold('CLI')}      — Multi-Backend ReAct Terminal {_dim('(main_mk37.py)')}")
-    print(f"    {_cyan('[3]')}  {_bold('BOTH')}     — Voice GUI + CLI in parallel")
-    print(f"    {_cyan('[4]')}  {_bold('STATUS')}   — System diagnostics")
-    print(f"    {_cyan('[5]')}  {_bold('DOCTOR')}   — Check & fix dependencies")
-    print()
-
-    try:
-        choice = input(f"  {_cyan('❯')} Enter choice (1-5): ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        print(f"\n   {_dim('Cancelled.')}")
-        sys.exit(0)
-
-    mode_map = {
-        "1": "voice", "2": "cli", "3": "both",
-        "4": "status", "5": "doctor",
-    }
-    return mode_map.get(choice, choice)
-
+    except Exception: pass
 
 # ── Main Entry ───────────────────────────────────────────────────────────────
 
 def main():
-    # Graceful Ctrl+C handling
     signal.signal(signal.SIGINT, lambda s, f: sys.exit(0))
-
-    # Resolve mode from CLI args or interactive menu
     if len(sys.argv) > 1:
         mode = sys.argv[1].lower().strip().lstrip("-")
     else:
         _banner()
-        _check_env()  # load dotenv
-        mode = _interactive_menu()
+        _check_env()
+        
+        table = Table(show_header=False, box=None, padding=(0, 2))
+        table.add_column("Num", style="bold cyan")
+        table.add_column("Action", style="bold")
+        table.add_column("Desc", style="dim")
+        
+        table.add_row("1", "VOICE", "Gemini Live Audio Graphical Interface")
+        table.add_row("2", "CLI", "ReAct Terminal Interface (Multi Backend)")
+        table.add_row("3", "BOTH", "Voice + CLI running simultaneously")
+        table.add_row("4", "SCREEN SHARE", "Launch WebSocket Monitor Tool")
+        table.add_row("5", "STATUS", "Check AI configuration and module health")
+        table.add_row("6", "DOCTOR", "Auto-install missing dependencies")
+        
+        console.print(Panel(table, title="[bold]Select Module Sequence[/]", expand=False))
+        console.print()
+        
+        choice = Prompt.ask("  [cyan]❯[/] Ready", choices=["1", "2", "3", "4", "5", "6"], default="1")
+        mode = {"1": "voice", "2": "cli", "3": "both", "4": "screenshare", "5": "status", "6": "doctor"}[choice]
 
-    # ── Dispatch ─────────────────────────────────────────────────────────
-    if mode in ("voice", "v", "gui", "1"):
-        _banner() if len(sys.argv) > 1 else None
-        if _pre_launch_check():
-            launch_voice()
-
-    elif mode in ("cli", "c", "terminal", "2"):
-        _banner() if len(sys.argv) > 1 else None
-        if _pre_launch_check():
-            launch_cli()
-
-    elif mode in ("both", "b", "all", "3"):
-        _banner() if len(sys.argv) > 1 else None
-        if _pre_launch_check():
-            launch_both()
-
-    elif mode in ("silent",):
-        launch_silent()
-
-    elif mode in ("status", "s", "health"):
-        show_status()
-
-    elif mode in ("doctor", "fix", "install"):
-        doctor()
-
-    elif mode in ("version", "v", "ver"):
-        show_version()
-
+    if mode in ("voice", "v", "gui"): launch_voice() if _pre_launch_check() else None
+    elif mode in ("cli", "c", "terminal"): launch_cli() if _pre_launch_check() else None
+    elif mode in ("both", "b", "all"): launch_both() if _pre_launch_check() else None
+    elif mode in ("screenshare", "s", "monitor"): launch_screen_share()
+    elif mode in ("status", "health"): show_status()
+    elif mode in ("doctor", "fix"): doctor()
+    elif mode in ("silent",): launch_silent()
     else:
-        print(f"   {_FAIL} Unknown mode: '{mode}'")
-        print(f"      Use: voice, cli, both, --silent, --status, --doctor, --version")
+        console.print(f"[red]✗ Unknown launch argument provided.[/]")
         sys.exit(1)
-
 
 if __name__ == "__main__":
     main()
