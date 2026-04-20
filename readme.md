@@ -1,81 +1,87 @@
-# 🤖 MARK XXXVII (37)
-### The Ultimate Cross-Platform Personal AI Assistant — By Bharth Raj
-
-> 📺 **[Watch the full setup video on YouTube](https://www.youtube.com/watch?v=BhOsnGC_sAA)**
-
-A real-time voice AI that can hear, see, understand, and control your computer — on any OS. Supporting Windows, macOS, and Linux. Local execution. Zero subscriptions. Engineered for total autonomy.
+<div align="center">
+  <h1>🤖 JARVIS MK37</h1>
+  <p><b>The Ultimate Multi-Backend, Cross-Platform Personal AI Assistant</b></p>
+  <p><i>Engineered by Bharth Raj</i></p>
+</div>
 
 ---
 
 ## ✨ Overview
 
-MARK XXXVII is the most versatile evolution of the Jarvis project. It transforms your operating system into a living, breathing intelligent entity. Through natural voice commands, Mark 37 analyzes your screen, manages your files, and executes complex workflows across different environments.
+**JARVIS MK37** is an advanced, multi-modal AI assistant platform that transforms your operating system into a living, breathing intelligent entity. Operating as both a voice-powered interactive assistant and a high-performance command-line orchestrator, it allows for dynamic switching between multiple LLM backends to execute complex workflows across different environments.
 
-It's not just an assistant — it's an extension of your digital life.
-
----
-
-## 🚀 Capabilities
-
-### Core Features
-| Feature | Description |
-|---|---|
-| 🎙️ Real-time Voice | Ultra-low latency conversation in any language |
-| 🖥️ System Control | Launch apps, manage files, execute terminal commands |
-| 🧩 Autonomous Tasks | High-level planning for complex, multi-step goals |
-| 👁️ Visual Awareness | Real-time screen processing and webcam vision |
-| 🧠 Persistent Memory | Deeply remembers your projects, preferences, and personal context |
-| 🔒 Privacy First | Physical mute button (F4 / UI) and fully local control |
-| ⌨️ Keyboard & Voice | Switch seamlessly between typing and speaking |
+Whether you're running DevSecOps, scheduling tasks, automating UI clicks, or chatting locally, JARVIS MK37 is an extension of your digital life—running locally and supporting zero subscriptions.
 
 ---
 
-## 🆕 What's New in XXXVII
+## ⚡ Core Features
 
-- 🐧🍎 **Cross-Platform Support** *(Experimental)* — Now runs on Windows, macOS, and Linux. Core features work across all platforms; some OS-specific tasks may vary during the testing phase.
-- 💤 **Graceful Shutdown** — Tell Jarvis to "Shut down" or "Close" and it exits the session properly.
-- 🧠 **Strengthened Memory** — Improved long-term retention and context recall; better understanding of relationships and history.
-- 🔧 **Action Core Optimizations** — Major bugs in action scripts fixed for smoother system execution.
-- ⚡ **Optimized Performance** — Faster response times and refined tool-calling logic.
+- 🎙️ **Real-time Voice & Vision:** Ultra-low latency conversation coupled with real-time screen processing and webcam vision.
+- 🧠 **Multi-Backend AI:** Intelligent routing between Gemini, Anthropic, OpenAI, Mistral, NVIDIA NIM, and 100% offline, privacy-first **Ollama**.
+- 🛠️ **System Control & Automation:** Launch apps, manage files, fetch system telemetry, execute terminal commands, and perform Python-native mouse/keyboard automation.
+- 🫂 **Sub-Agent Delegation:** Spin up isolated sub-agents mimicking specialized roles (Coder, Reviewer, Devops, Sysadmin) to handle multi-step workflows.
+- 💾 **Persistent Hyper-Memory:** ChromaDB vector embeddings prevent context-amnesia. JARVIS actively remembers your projects, relationships, and history between reboots.
+- 🛡️ **Red Teaming & Security:** Built for DevSecOps users with `ALLOW_ALL` / `CONFIRM_ALL` permission modes, persistent audit logs, and strict Scope Enforcement.
 
 ---
 
-## ⚡ Quick Start
+## 🖥️ Cross-Platform Support
+**Fully Supported on:** Windows 10/11, macOS, and Linux.
+
+JARVIS MK37 leverages `sys.platform`, absolute pathlib resolution, and `utf-8` enforcing mechanisms to seamlessly operate from a WSL instance to native Windows 11.
+
+---
+
+## 🚀 Quick Start
+
+Ensure you have Python 3.11 or 3.12 installed.
 
 ```bash
 git clone https://github.com/bharthraj1412/jarvis.git
 cd jarvis
+pip install -r requirements_mk37.txt
 pip install -r requirements.txt
 playwright install
-python main.py
 ```
 
-> ⚠️ **Installation Note:** Due to the new cross-platform integration, OS-specific libraries are not all bundled in `requirements.txt` to keep the install lightweight. If you encounter a `ModuleNotFoundError`, simply run `pip install <module_name>` for your specific system.
+> ⚠️ **Installation Note:** Due to the cross-platform integration, OS-specific libraries are not all forcefully bundled. If you encounter a `ModuleNotFoundError`, simply run `pip install <module_name>` for your specific system.
+
+### Launching JARVIS
+
+**Option 1: Voice Interface**
+```bash
+python main.py
+```
+*Uses local audio transcription and system TTS. Features natively injected vision capabilities.*
+
+**Option 2: CLI DevSecOps Orchestrator**
+```bash
+python main_mk37.py
+```
+*A professional, rich-text terminal interface featuring explicit slash commands (`/skills`, `/memory`, `/install-skills`).*
 
 ---
 
-## 📋 Requirements
+## ⚙️ Architecture & Tools
 
-| Requirement | Details |
-|---|---|
-| **OS** | Windows 10/11, macOS, or Linux |
-| **Python** | 3.11 or 3.12 |
-| **Microphone** | Required for voice commands |
-| **API Key** | Free Gemini API key |
+JARVIS combines over 30 deterministic Python tools with a dynamic "Skill" ecosystem representing repeatable prompt templates.
 
----
-
-## ⚠️ License
-
-Personal and non-commercial use only.
-Licensed under **[Creative Commons BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/)**.
+- **Tool Registry**: Includes Sandbox for secure code execution, Computer Settings manipulation via OS native queries, and Red Team OSINT recon.
+- **Skill Ecosystem**: Ships with 45 built-in professional skills (DevOps templates, Security Scans, CI/CD).
+- **External Installer**: Natively pull missing abilities from massive open-source GitHub hubs using `/install-skills`.
 
 ---
 
-## 👤 Connect with the Creator
+## 🛡️ Privacy & Restrictions
 
-⭐ **Star the repository to support the project.**
+**Your Data Stays Yours.** 
+With the Offline **Ollama Backend**, you can enforce 100% local, on-machine inference. 
+A physical mute button is built-in (F4 / UI) to pause execution globally.
 
-| Platform | Link |
-|---|---|
-| GitHub | [@bharthraj1412](https://github.com/bharthraj1412) |
+---
+
+## 👤 Author
+
+Developed and maintained by **Bharth Raj** [@bharthraj1412](https://github.com/bharthraj1412)
+
+⭐ **Star the repository to support project development and the journey to Mark 85!**
