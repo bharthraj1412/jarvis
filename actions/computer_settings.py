@@ -108,6 +108,102 @@ def volume_set(value: int):
             capture_output=True)
         return
 
+def _win_brightness_change(delta: int):
+    """Change Windows brightness by delta %. Multi-fallback chain."""
+    # Method 1: WMI (works on laptops)
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f"$cur = (Get-CimInstance -Namespace root/wmi -ClassName WmiMonitorBrightness).CurrentBrightness;"
+             f"$new = [math]::Max(0, [math]::Min(100, $cur + ({delta})));"
+             f"$m = Get-CimInstance -Namespace root/wmi -ClassName WmiMonitorBrightnessMethods;"
+             f"$m | Invoke-CimMethod -MethodName WmiSetBrightness -Arguments @{{Timeout=1; Brightness=$new}};"
+             f"Write-Output $new"],
+            capture_output=True, text=True, timeout=8
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return f"Brightness {'increased' if delta > 0 else 'decreased'} to {result.stdout.strip()}%."
+    except Exception:
+        pass
+
+    # Method 2: PowerShell Set-Brightness (Windows 10/11)
+    try:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f"$b = (Get-Ciminstance -Namespace root/WMI -ClassName WmiMonitorBrightness).CurrentBrightness;"
+             f"$n = [math]::Max(0,[math]::Min(100,$b+{delta}));"
+             f"(Get-WmiObject -Namespace root/wmi -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1,$n)"],
+            capture_output=True, timeout=8
+        )
+        return f"Brightness adjusted by {delta:+d}%."
+    except Exception:
+        pass
+
+    # Method 3: nircmd (if installed)
+    try:
+        cmd = "changebrightness" if delta > 0 else "changebrightness"
+        subprocess.run(["nircmd.exe", cmd, str(delta)], capture_output=True, timeout=5)
+        return f"Brightness adjusted by {delta:+d}% (nircmd)."
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+
+    # Method 4: Simulate brightness keys
+    try:
+        import pyautogui
+        steps = abs(delta) // 10
+        for _ in range(max(1, steps)):
+            pyautogui.press("brightnessup" if delta > 0 else "brightnessdown")
+        return f"Brightness adjusted via keyboard keys."
+    except Exception:
+        pass
+
+    return f"Could not change brightness. Desktop PCs may not support software brightness control."
+
+
+def _win_brightness_set(value: int):
+    """Set Windows brightness to exact value. Multi-fallback chain."""
+    value = max(0, min(100, int(value)))
+    # Method 1: CIM/WMI
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f"$m = Get-CimInstance -Namespace root/wmi -ClassName WmiMonitorBrightnessMethods;"
+             f"$m | Invoke-CimMethod -MethodName WmiSetBrightness -Arguments @{{Timeout=1; Brightness={value}}};"
+             f"Write-Output 'OK'"],
+            capture_output=True, text=True, timeout=8
+        )
+        if result.returncode == 0:
+            return f"Brightness set to {value}%."
+    except Exception:
+        pass
+
+    # Method 2: Legacy WMI
+    try:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f"(Get-WmiObject -Namespace root/wmi -Class WmiMonitorBrightnessMethods)"
+             f".WmiSetBrightness(1, {value})"],
+            capture_output=True, timeout=8
+        )
+        return f"Brightness set to {value}%."
+    except Exception:
+        pass
+
+    # Method 3: nircmd
+    try:
+        subprocess.run(["nircmd.exe", "setbrightness", str(value)],
+                      capture_output=True, timeout=5)
+        return f"Brightness set to {value}% (nircmd)."
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+
+    return f"Could not set brightness to {value}%. Desktop monitors may not support software brightness control."
+
+
 def brightness_up():
     if _OS == "Darwin":
         subprocess.run(["osascript", "-e",
@@ -121,21 +217,12 @@ def brightness_up():
             subprocess.run(
                 'xrandr --output $(xrandr | grep " connected" | head -1 | cut -d " " -f1)'
                 ' --brightness $(python3 -c "import subprocess; '
-                'b=float(subprocess.check_output([\"xrandr\",\"--verbose\"]).decode()'
-                '.split(\"Brightness:\")[1].split()[0]); print(min(1.0,b+0.1))")',
+                'b=float(subprocess.check_output([\\"xrandr\\",\\"--verbose\\"]).decode()'
+                '.split(\\"Brightness:\\")[1].split()[0]); print(min(1.0,b+0.1))")',
                 shell=True, capture_output=True
             )
     else:
-        try:
-            subprocess.run(
-                ["powershell", "-Command",
-                 "(Get-WmiObject -Namespace root/wmi -Class WmiMonitorBrightnessMethods)"
-                 ".WmiSetBrightness(1, [math]::Min(100, "
-                 "(Get-WmiObject -Namespace root/wmi -Class WmiMonitorBrightness).CurrentBrightness + 10))"],
-                capture_output=True, timeout=5
-            )
-        except Exception as e:
-            print(f"[Settings] Brightness up failed on Windows: {e}")
+        return _win_brightness_change(10)
 
 def brightness_down():
     if _OS == "Darwin":
@@ -150,21 +237,80 @@ def brightness_down():
             subprocess.run(
                 'xrandr --output $(xrandr | grep " connected" | head -1 | cut -d " " -f1)'
                 ' --brightness $(python3 -c "import subprocess; '
-                'b=float(subprocess.check_output([\"xrandr\",\"--verbose\"]).decode()'
-                '.split(\"Brightness:\")[1].split()[0]); print(max(0.1,b-0.1))")',
+                'b=float(subprocess.check_output([\\"xrandr\\",\\"--verbose\\"]).decode()'
+                '.split(\\"Brightness:\\")[1].split()[0]); print(max(0.1,b-0.1))")',
                 shell=True, capture_output=True
             )
     else:
+        return _win_brightness_change(-10)
+
+def brightness_set(value: int):
+    """Set brightness to a specific percentage (0-100)."""
+    value = max(0, min(100, int(value)))
+    if _OS == "Windows":
+        return _win_brightness_set(value)
+    elif _OS == "Darwin":
         try:
+            subprocess.run(["osascript", "-e",
+                f'tell application "System Events" to set value of slider 1 of '
+                f'group 1 of window "Display" of process "System Preferences" to {value / 100.0}'],
+                capture_output=True, timeout=5)
+        except Exception:
+            for _ in range(16):
+                subprocess.run(["osascript", "-e",
+                    'tell application "System Events" to key code 145'],
+                    capture_output=True)
+            steps = int(value / 100.0 * 16)
+            for _ in range(steps):
+                subprocess.run(["osascript", "-e",
+                    'tell application "System Events" to key code 144'],
+                    capture_output=True)
+    else:
+        if subprocess.run(["which", "brightnessctl"],
+                capture_output=True).returncode == 0:
+            subprocess.run(["brightnessctl", "set", f"{value}%"], capture_output=True)
+        else:
+            brightness = value / 100.0
             subprocess.run(
-                ["powershell", "-Command",
-                 "(Get-WmiObject -Namespace root/wmi -Class WmiMonitorBrightnessMethods)"
-                 ".WmiSetBrightness(1, [math]::Max(0, "
-                 "(Get-WmiObject -Namespace root/wmi -Class WmiMonitorBrightness).CurrentBrightness - 10))"],
-                capture_output=True, timeout=5
+                f'xrandr --output $(xrandr | grep " connected" | head -1 | cut -d " " -f1)'
+                f' --brightness {brightness}',
+                shell=True, capture_output=True
             )
-        except Exception as e:
-            print(f"[Settings] Brightness down failed on Windows: {e}")
+
+def brightness_get() -> str:
+    """Get current brightness level."""
+    if _OS == "Windows":
+        try:
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "(Get-CimInstance -Namespace root/wmi -ClassName WmiMonitorBrightness).CurrentBrightness"],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return f"Current brightness: {result.stdout.strip()}%"
+        except Exception:
+            pass
+        return "Could not read brightness level."
+    elif _OS == "Darwin":
+        try:
+            result = subprocess.run(
+                ["osascript", "-e", 'tell application "System Events" to get brightness of display 1'],
+                capture_output=True, text=True, timeout=5
+            )
+            return f"Current brightness: {result.stdout.strip()}"
+        except Exception:
+            return "Could not read brightness on macOS."
+    else:
+        try:
+            result = subprocess.run(["brightnessctl", "get"], capture_output=True, text=True, timeout=5)
+            max_result = subprocess.run(["brightnessctl", "max"], capture_output=True, text=True, timeout=5)
+            cur = int(result.stdout.strip())
+            mx = int(max_result.stdout.strip())
+            pct = int(cur / mx * 100)
+            return f"Current brightness: {pct}%"
+        except Exception:
+            return "Could not read brightness on Linux."
+
 
 def close_app():
     if _OS == "Darwin": pyautogui.hotkey("command", "q")
@@ -509,6 +655,7 @@ ACTION_MAP: dict[str, callable] = {
     "toggle_mute":         volume_mute,
     "brightness_up":       brightness_up,
     "brightness_down":     brightness_down,
+    "brightness_get":      brightness_get,
     "sleep_display":       sleep_display,
     "screen_off":          sleep_display,
     "pause_video":         pause_video,
@@ -569,12 +716,18 @@ _DANGEROUS_ACTIONS = {"restart", "shutdown"}
 
 def _detect_action(description: str) -> dict:
 
+    try:
+        from config.models import get_model
+        model_name = get_model("gemini") or "gemini-2.5-flash-lite"
+    except Exception:
+        model_name = "gemini-2.5-flash-lite"
+
     import google.generativeai as genai
     genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel("gemini-2.5-flash-lite")
+    model = genai.GenerativeModel(model_name)
 
     available = ", ".join(sorted(ACTION_MAP.keys())) + \
-                ", volume_set, type_text, press_key, reload_n"
+                ", volume_set, brightness_set, type_text, press_key, reload_n"
 
     prompt = f"""You are an intent detector for a computer control assistant.
 
@@ -588,9 +741,13 @@ Return ONLY a valid JSON object:
 Rules:
 - Pick the single best matching action from the available list.
 - For volume_set: value is an integer 0-100.
+- For brightness_set: value is an integer 0-100.
+- For brightness_up/brightness_down: value is null.
 - For type_text: value is the exact text to type.
 - For press_key: value is the key name (e.g. "f5", "tab", "enter").
 - For reload_n: value is an integer (number of times to reload).
+- "increase brightness" → brightness_up, "reduce brightness" → brightness_down
+- "set brightness to 50" → brightness_set with value 50
 - If no clear match, pick the closest action.
 - Return ONLY the JSON, no explanation, no markdown."""
 
@@ -645,6 +802,13 @@ def computer_settings(
             return f"Volume set to {value}%."
         except Exception as e:
             return f"Could not set volume: {e}"
+
+    if action == "brightness_set":
+        try:
+            brightness_set(int(value or 50))
+            return f"Brightness set to {value}%."
+        except Exception as e:
+            return f"Could not set brightness: {e}"
 
     if action in ("type_text", "write_on_screen", "type", "write"):
         text = str(value or params.get("text", "")).strip()

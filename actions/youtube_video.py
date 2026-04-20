@@ -1,15 +1,12 @@
 import json
 import re
 import sys
-import time
 import subprocess
-import shutil
 from pathlib import Path
 from datetime import datetime
 from urllib.parse import quote_plus
 
-import pyautogui
-import numpy as np
+
 
 try:
     import requests
@@ -23,7 +20,7 @@ try:
 except ImportError:
     _TRANSCRIPT_OK = False
 
-from config import get_os, is_windows, is_mac, is_linux
+from config import is_windows, is_mac, is_linux
 
 
 def _get_base_dir() -> Path:

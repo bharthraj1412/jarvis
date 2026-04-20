@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 import random
+import platform
 from pathlib import Path
 
 try:
@@ -21,6 +22,8 @@ try:
     _PYPERCLIP = True
 except ImportError:
     _PYPERCLIP = False
+
+_OS = platform.system()  # "Windows" | "Darwin" | "Linux"
 
 def _base_dir() -> Path:
     if getattr(sys, "frozen", False):
@@ -39,7 +42,7 @@ def _load_config() -> dict:
         return {}
 
 def _get_os() -> str:
-    return _load_config().get("os_system", "windows").lower()
+    return _OS.lower()
 
 
 def _get_api_key() -> str:
@@ -313,6 +316,13 @@ def _screen_find(description: str) -> tuple[int, int] | None:
         image_bytes = buf.getvalue()
 
         client = genai.Client(api_key=api_key)
+
+        try:
+            from config.models import get_model
+            vision_model = get_model("gemini") or "gemini-2.5-flash-lite"
+        except Exception:
+            vision_model = "gemini-2.5-flash-lite"
+
         prompt = (
             f"This is a screenshot of a {w}×{h} pixel screen. "
             f"Locate the UI element described as: '{description}'. "
@@ -321,7 +331,7 @@ def _screen_find(description: str) -> tuple[int, int] | None:
         )
 
         response = client.models.generate_content(
-            model="gemini-2.5-flash-lite",
+            model=vision_model,
             contents=[
                 gtypes.Part.from_bytes(data=image_bytes, mime_type="image/png"),
                 prompt,

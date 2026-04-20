@@ -1,0 +1,32 @@
+# Environment variables
+.env
+.env.template
+config/api_keys.json
+config/models.json
+current_scope.json
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Database files
+memory_db/
+*.sqlite3
+*.db

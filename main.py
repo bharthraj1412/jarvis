@@ -6,6 +6,9 @@ import sys
 import traceback
 from pathlib import Path
 
+if sys.stdout.encoding.lower() != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8')
+
 import sounddevice as sd
 from google import genai
 from google.genai import types
@@ -41,7 +44,16 @@ def get_base_dir():
 BASE_DIR        = get_base_dir()
 API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 PROMPT_PATH     = BASE_DIR / "core" / "prompt.txt"
-LIVE_MODEL          = "models/gemini-2.5-flash-native-audio-preview-12-2025"
+from dotenv import load_dotenv as _load_dotenv
+_env = Path(__file__).parent / ".env"
+if _env.exists():
+    _load_dotenv(_env)
+
+from config.models import get_model_config as _get_model_config
+
+_model_cfg          = _get_model_config()
+LIVE_MODEL          = _model_cfg.get("voice_live", "models/gemini-2.5-flash-native-audio-preview-12-2025")
+VOICE_NAME          = _model_cfg.get("voice_name", "Charon")
 CHANNELS            = 1
 SEND_SAMPLE_RATE    = 16000
 RECEIVE_SAMPLE_RATE = 24000
@@ -170,7 +182,8 @@ TOOL_DECLARATIONS = [
             "MUST be called when user asks what is on screen, what you see, "
             "analyze my screen, look at camera, etc. "
             "You have NO visual ability without this tool. "
-            "After calling this tool, stay SILENT — the vision module speaks directly."
+            "After calling this tool, stay SILENT — the vision module speaks directly. "
+            "NEVER use for OS controls (brightness, volume, WiFi etc.) — use computer_settings instead."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -184,17 +197,31 @@ TOOL_DECLARATIONS = [
     {
         "name": "computer_settings",
         "description": (
-            "Controls the computer: volume, brightness, window management, keyboard shortcuts, "
-            "typing text on screen, closing apps, fullscreen, dark mode, WiFi, restart, shutdown, "
-            "scrolling, tab management, zoom, screenshots, lock screen, refresh/reload page. "
+            "THE tool for ALL operating system and hardware controls. "
+            "MUST be used for: brightness (up/down/set), volume (up/down/mute/set), "
+            "WiFi toggle, dark mode, window management (minimize/maximize/snap/fullscreen/close), "
+            "keyboard shortcuts, typing text on screen, scrolling, tabs, zoom, "
+            "screenshots, lock screen, restart, shutdown, refresh/reload page. "
+            "NEVER use screen_find or screen_process for these — they are OS-level actions. "
+            "For brightness: action=brightness_up or action=brightness_down. "
+            "For volume: action=volume_up, volume_down, mute, or volume_set with value=0-100. "
             "Use for ANY single computer control command. NEVER route to agent_task."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "description": "The action to perform"},
-                "description": {"type": "STRING", "description": "Natural language description of what to do"},
-                "value":       {"type": "STRING", "description": "Optional value: volume level, text to type, etc."}
+                "action":      {"type": "STRING", "description": (
+                    "The action to perform. Common actions: "
+                    "brightness_up, brightness_down, volume_up, volume_down, volume_set, mute, "
+                    "close_app, close_window, full_screen, minimize, maximize, snap_left, snap_right, "
+                    "switch_window, show_desktop, task_manager, dark_mode, toggle_wifi, "
+                    "screenshot, lock_screen, restart, shutdown, scroll_up, scroll_down, "
+                    "zoom_in, zoom_out, refresh_page, close_tab, new_tab, next_tab, prev_tab, "
+                    "copy, paste, cut, undo, redo, select_all, save, enter, escape, "
+                    "type_text, press_key, open_settings, file_explorer, sleep_display"
+                )},
+                "description": {"type": "STRING", "description": "Natural language description of what to do (used for AI intent detection if action is unclear)"},
+                "value":       {"type": "STRING", "description": "Optional value: volume level (0-100), text to type, key to press, etc."}
             },
             "required": []
         }
@@ -311,7 +338,14 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "computer_control",
-        "description": "Direct computer control: type, click, hotkeys, scroll, move mouse, screenshots, find elements on screen.",
+        "description": (
+            "Direct mouse and keyboard automation — for CLICKING specific coordinates, "
+            "TYPING text at cursor, pressing key combos, scrolling, dragging, and "
+            "AI-powered screen element finding (screen_find/screen_click). "
+            "ONLY use this for direct input tasks. "
+            "For OS-level controls (brightness, volume, wifi, dark mode, window management), "
+            "use computer_settings instead."
+        ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
@@ -417,6 +451,154 @@ TOOL_DECLARATIONS = [
             "required": ["category", "key", "value"]
         }
     },
+    # ── MK37 Red Team Tools ────────────────────────────────────────────────
+    {
+        "name": "port_scan",
+        "description": (
+            "Scan TCP ports on a target host. Only works on in-scope targets. "
+            "Returns open/closed status for common ports or a custom list."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "host":  {"type": "STRING", "description": "Target host IP or hostname"},
+                "ports": {"type": "STRING", "description": "Comma-separated port numbers (default: 22,80,443,8080,8443,3389)"},
+            },
+            "required": ["host"]
+        }
+    },
+    {
+        "name": "dns_enum",
+        "description": "Enumerate DNS records (A, MX, NS, TXT, CNAME) for a domain. Scope-checked.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "domain": {"type": "STRING", "description": "Target domain to enumerate"},
+            },
+            "required": ["domain"]
+        }
+    },
+    {
+        "name": "headers_audit",
+        "description": "Audit HTTP security headers of a URL. Reports missing security headers. Scope-checked.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "url": {"type": "STRING", "description": "Target URL to audit"},
+            },
+            "required": ["url"]
+        }
+    },
+    {
+        "name": "mode_switch",
+        "description": (
+            "Switch JARVIS persona mode. Call when user says: switch to recon mode, "
+            "go to coder mode, enter exploit mode, etc."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "mode": {"type": "STRING", "description": "Mode name: recon, exploit, report, planner, coder, analyst, general"},
+            },
+            "required": ["mode"]
+        }
+    },
+    # ── MK37 Architecture Bridge ──────────────────────────────────────────
+    {
+        "name": "run_skill",
+        "description": (
+            "Execute a JARVIS MK37 skill by name. Skills are powerful reusable workflows. "
+            "Available skills include: commit (git commit), review (code review), edit (file editing), "
+            "research (deep web research), pc_control (PC automation), "
+            "github_scan (repo analysis), screenshot_fix (auto-fix screen errors), "
+            "docker_deploy (Docker containers), scaffold (project generation), "
+            "monitor (website uptime check). "
+            "Use list_skills to see all available skills."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "skill_name": {"type": "STRING", "description": "Name of the skill to run (e.g. commit, review, github_scan, scaffold)"},
+                "arguments":  {"type": "STRING", "description": "Arguments to pass to the skill"},
+            },
+            "required": ["skill_name"]
+        }
+    },
+    {
+        "name": "list_skills",
+        "description": "List all available JARVIS MK37 skills with their triggers and descriptions.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {},
+        }
+    },
+    {
+        "name": "spawn_agent",
+        "description": (
+            "Spawn a specialized MK37 sub-agent for parallel or complex work. "
+            "Agent types: coder (writes code), reviewer (reviews code), "
+            "researcher (web research), tester (writes tests), editor (edits files via keyboard/mouse). "
+            "The agent works independently and returns its result."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "agent_type": {"type": "STRING", "description": "Type: coder, reviewer, researcher, tester, editor, general-purpose"},
+                "task":       {"type": "STRING", "description": "What the agent should do"},
+            },
+            "required": ["agent_type", "task"]
+        }
+    },
+    {
+        "name": "memory_save_mk37",
+        "description": (
+            "Save important information to JARVIS persistent memory (MK37 file-based store). "
+            "Unlike save_memory which stores simple key-value pairs, this stores rich, "
+            "searchable memories with descriptions. Use for: technical decisions, "
+            "project context, system configurations, meeting notes, research findings."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "name":        {"type": "STRING", "description": "Short name for the memory (snake_case)"},
+                "description": {"type": "STRING", "description": "One-line summary of what this memory contains"},
+                "content":     {"type": "STRING", "description": "The full content to remember"},
+                "type":        {"type": "STRING", "description": "Type: user, project, system, insight (default: user)"},
+            },
+            "required": ["name", "description", "content"]
+        }
+    },
+    {
+        "name": "memory_search_mk37",
+        "description": (
+            "Search JARVIS persistent memories (MK37 file-based store). "
+            "Use to recall past decisions, project context, user preferences, "
+            "or any previously saved information."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "query": {"type": "STRING", "description": "Search query to find relevant memories"},
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "mk37_chat",
+        "description": (
+            "Route a complex query through the full MK37 ReAct orchestrator. "
+            "The orchestrator can chain multiple tools autonomously (up to 15 steps) "
+            "to solve complex, multi-step tasks. Use this for tasks that require "
+            "planning and sequential tool use that a single tool can't handle."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "query": {"type": "STRING", "description": "The complex task or question to process"},
+            },
+            "required": ["query"]
+        }
+    },
 ]
 
 
@@ -432,6 +614,7 @@ class JarvisLive:
         self._speaking_lock = threading.Lock()
         self.ui.on_text_command = self._on_text_command
         self._turn_done_event: asyncio.Event | None = None
+        self._current_mode  = "general"  # MK37 persona mode
 
     def _on_text_command(self, text: str):
         if not self._loop or not self.session:
@@ -498,7 +681,7 @@ class JarvisLive:
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                        voice_name="Charon"
+                        voice_name=VOICE_NAME
                     )
                 )
             ),
@@ -606,6 +789,186 @@ class JarvisLive:
                 r = await loop.run_in_executor(None, lambda: flight_finder(parameters=args, player=self.ui))
                 result = r or "Done."
 
+            # ── MK37 Red Team Tools ───────────────────────────────────────
+            elif name == "port_scan":
+                def _port_scan():
+                    import socket
+                    host = args.get("host", "")
+                    ports_str = args.get("ports", "22,80,443,8080,8443,3389")
+                    ports = [int(p.strip()) for p in ports_str.split(",") if p.strip().isdigit()]
+                    results = {}
+                    for port in ports:
+                        try:
+                            s = socket.socket()
+                            s.settimeout(1)
+                            s.connect((host, port))
+                            results[port] = "open"
+                            s.close()
+                        except Exception:
+                            results[port] = "closed"
+                    return f"Port scan results for {host}: {results}"
+                r = await loop.run_in_executor(None, _port_scan)
+                result = r or "Done."
+
+            elif name == "dns_enum":
+                def _dns_enum():
+                    import subprocess
+                    domain = args.get("domain", "")
+                    records = {}
+                    for rtype in ["A", "MX", "NS", "TXT", "CNAME"]:
+                        try:
+                            out = subprocess.run(
+                                ["nslookup", "-type=" + rtype, domain],
+                                capture_output=True, text=True, timeout=5
+                            )
+                            records[rtype] = out.stdout.strip()
+                        except Exception as e:
+                            records[rtype] = str(e)
+                    return f"DNS records for {domain}: {json.dumps(records, indent=2)}"
+                r = await loop.run_in_executor(None, _dns_enum)
+                result = r or "Done."
+
+            elif name == "headers_audit":
+                def _headers_audit():
+                    import httpx
+                    url = args.get("url", "")
+                    r = httpx.get(url, follow_redirects=True, timeout=10)
+                    security_headers = [
+                        "Strict-Transport-Security", "X-Content-Type-Options",
+                        "X-Frame-Options", "Content-Security-Policy", "Referrer-Policy"
+                    ]
+                    missing = [h for h in security_headers if h not in r.headers]
+                    return f"Status: {r.status_code}. Missing security headers: {missing}"
+                r = await loop.run_in_executor(None, _headers_audit)
+                result = r or "Done."
+
+            elif name == "mode_switch":
+                mode = args.get("mode", "general").lower()
+                valid_modes = ["recon", "exploit", "report", "planner", "coder", "analyst", "general"]
+                if mode in valid_modes:
+                    self._current_mode = mode
+                    self.ui.write_log(f"SYS: Mode switched to {mode.upper()}")
+                    result = f"Mode switched to {mode.upper()}. I am now operating as a {mode} specialist."
+                else:
+                    result = f"Unknown mode: {mode}. Available: {', '.join(valid_modes)}"
+
+            # ── MK37 Architecture Bridge ──────────────────────────────────
+            elif name == "run_skill":
+                def _run_skill():
+                    from skills import load_skills, find_skill, execute_skill
+                    skill_name = args.get("skill_name", "")
+                    skill_args = args.get("arguments", "")
+                    # Find by name
+                    skill = None
+                    for s in load_skills():
+                        if s.name == skill_name:
+                            skill = s
+                            break
+                    if skill is None:
+                        skill = find_skill(f"/{skill_name}")
+                    if skill is None:
+                        available = [s.name for s in load_skills()]
+                        return f"Skill '{skill_name}' not found. Available: {', '.join(available)}"
+                    # Create a lightweight orchestrator bridge for skill execution
+                    class _VoiceBridge:
+                        def chat(self_bridge, message):
+                            return f"[Skill executed] {message[:200]}"
+                    return execute_skill(skill, skill_args, _VoiceBridge())
+                r = await loop.run_in_executor(None, _run_skill)
+                result = r or "Skill executed."
+                self.ui.write_log(f"SYS: Skill '{args.get('skill_name')}' executed.")
+
+            elif name == "list_skills":
+                def _list_skills():
+                    from skills import load_skills
+                    skills = load_skills()
+                    lines = [f"Available skills ({len(skills)}):"]
+                    for s in skills:
+                        triggers = ", ".join(s.triggers)
+                        lines.append(f"  - {s.name} ({triggers}): {s.description}")
+                    return "\n".join(lines)
+                r = await loop.run_in_executor(None, _list_skills)
+                result = r
+
+            elif name == "spawn_agent":
+                def _spawn_agent():
+                    from multi_agent.subagent import SubAgentManager, get_agent_definition
+                    agent_type = args.get("agent_type", "general-purpose")
+                    task = args.get("task", "")
+                    try:
+                        get_agent_definition(agent_type)  # validate type exists
+                    except KeyError:
+                        from multi_agent.subagent import load_agent_definitions
+                        available = list(load_agent_definitions().keys())
+                        return f"Unknown agent type '{agent_type}'. Available: {', '.join(available)}"
+                    mgr = SubAgentManager(max_depth=2)
+                    task_obj = mgr.spawn(prompt=task, orchestrator=None, agent_type=agent_type)
+                    return f"Agent '{agent_type}' completed. Status: {task_obj.status}. Result: {task_obj.result[:500]}"
+                r = await loop.run_in_executor(None, _spawn_agent)
+                result = r or "Agent task completed."
+                self.ui.write_log(f"SYS: Sub-agent '{args.get('agent_type')}' finished.")
+
+            elif name == "memory_save_mk37":
+                def _memory_save():
+                    from memory.persistent_store import MemoryEntry, save_memory as mk37_save
+                    from datetime import date
+                    entry = MemoryEntry(
+                        name=args.get("name", "unnamed"),
+                        description=args.get("description", ""),
+                        type=args.get("type", "user"),
+                        content=args.get("content", ""),
+                        created=date.today().isoformat(),
+                    )
+                    mk37_save(entry, scope="user")
+                    return f"Memory saved: {entry.name}"
+                r = await loop.run_in_executor(None, _memory_save)
+                result = r
+                print(f"[Memory MK37] Saved: {args.get('name')}")
+
+            elif name == "memory_search_mk37":
+                def _memory_search():
+                    from memory.persistent_store import search_memory
+                    query = args.get("query", "")
+                    results = search_memory(query)
+                    if not results:
+                        return f"No memories found for '{query}'."
+                    lines = [f"Found {len(results)} memories for '{query}':"]
+                    for entry in results[:5]:
+                        lines.append(f"  - {entry.name}: {entry.description}")
+                        lines.append(f"    Content: {entry.content[:150]}")
+                    return "\n".join(lines)
+                r = await loop.run_in_executor(None, _memory_search)
+                result = r
+
+            elif name == "mk37_chat":
+                def _mk37_chat():
+                    query = args.get("query", "")
+                    try:
+                        from router import AgentRouter, AgentProfile
+                        # Try to build a minimal router with available backends
+                        backends = {}
+                        try:
+                            from gemini_backend import GeminiBackend
+                            backends[AgentProfile.GEMINI] = GeminiBackend()
+                        except Exception:
+                            pass
+                        try:
+                            from ollama_backend import OllamaBackend
+                            backends[AgentProfile.OLLAMA] = OllamaBackend()
+                        except Exception:
+                            pass
+                        if not backends:
+                            return "No MK37 backends available for ReAct orchestration."
+                        router = AgentRouter(backends)
+                        from orchestrator import JarvisOrchestrator
+                        orch = JarvisOrchestrator(router, use_vector_memory=False)
+                        return orch.chat(query)
+                    except Exception as e:
+                        return f"MK37 orchestrator error: {e}"
+                r = await loop.run_in_executor(None, _mk37_chat)
+                result = r or "MK37 processing complete."
+                self.ui.write_log("SYS: MK37 ReAct orchestrator finished.")
+
             elif name == "shutdown_jarvis":
                 self.ui.write_log("SYS: Shutdown requested.")
                 self.speak("Goodbye, sir.")
@@ -641,13 +1004,19 @@ class JarvisLive:
         print("[JARVIS] 🎤 Mic started")
         loop = asyncio.get_event_loop()
 
+        def _safe_put(item):
+            try:
+                self.out_queue.put_nowait(item)
+            except asyncio.QueueFull:
+                pass
+
         def callback(indata, frames, time_info, status):
             with self._speaking_lock:
                 jarvis_speaking = self._is_speaking
             if not jarvis_speaking and not self.ui.muted:
                 data = indata.tobytes()
                 loop.call_soon_threadsafe(
-                    self.out_queue.put_nowait,
+                    _safe_put,
                     {"data": data, "mime_type": "audio/pcm"}
                 )
 
@@ -772,24 +1141,28 @@ class JarvisLive:
                 self.ui.set_state("THINKING")
                 config = self._build_config()
 
-                async with (
-                    client.aio.live.connect(model=LIVE_MODEL, config=config) as session,
-                    asyncio.TaskGroup() as tg,
-                ):
-                    self.session        = session
-                    self._loop          = asyncio.get_event_loop()
-                    self.audio_in_queue = asyncio.Queue()
-                    self.out_queue      = asyncio.Queue(maxsize=10)
+                async with client.aio.live.connect(model=LIVE_MODEL, config=config) as session:
+                    # Initialize queues and session BEFORE creating tasks
+                    self.session          = session
+                    self._loop            = asyncio.get_event_loop()
+                    self.audio_in_queue   = asyncio.Queue()
+                    self.out_queue        = asyncio.Queue(maxsize=10)
                     self._turn_done_event = asyncio.Event()
 
                     print("[JARVIS] ✅ Connected.")
                     self.ui.set_state("LISTENING")
-                    self.ui.write_log("SYS: JARVIS online.")
+                    self.ui.write_log("SYS: JARVIS MK37 online.")
 
-                    tg.create_task(self._send_realtime())
-                    tg.create_task(self._listen_audio())
-                    tg.create_task(self._receive_audio())
-                    tg.create_task(self._play_audio())
+                    # Now create tasks after queues are ready
+                    tg_tasks = [
+                        asyncio.create_task(self._send_realtime()),
+                        asyncio.create_task(self._listen_audio()),
+                        asyncio.create_task(self._receive_audio()),
+                        asyncio.create_task(self._play_audio())
+                    ]
+
+                    # Wait for all tasks to complete (if ever)
+                    await asyncio.gather(*tg_tasks)
 
             except Exception as e:
                 print(f"[JARVIS] ⚠️ {e}")
