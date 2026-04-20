@@ -1,7 +1,21 @@
+# memory/memory_manager.py
+"""
+Working memory manager for JARVIS MK37 (voice interface).
+
+BUG-FIX (Minor — dict mutation during iteration):
+  `_trim_to_limit()` called `del memory[cat][key]` inside the same for-loop
+  that iterated over `_all_entries(memory)`.  Because `_all_entries` returns
+  tuples that directly reference the live dict values, deleting a key while
+  iterating could skip entries or raise RuntimeError on some Python versions.
+
+  FIX: collect the keys to delete first, then delete them in a second pass.
+"""
+from __future__ import annotations
+
 import json
 from datetime import datetime
-from threading import Lock
 from pathlib import Path
+from threading import Lock
 import sys
 
 
@@ -17,6 +31,7 @@ _lock            = Lock()
 MAX_VALUE_LENGTH = 380
 MEMORY_MAX_CHARS = 2200
 
+
 def _empty_memory() -> dict:
     return {
         "identity":      {},
@@ -26,6 +41,7 @@ def _empty_memory() -> dict:
         "wishes":        {},
         "notes":         {},
     }
+
 
 def load_memory() -> dict:
     if not MEMORY_PATH.exists():
@@ -44,6 +60,7 @@ def load_memory() -> dict:
             print(f"[Memory] ⚠️ Load error: {e}")
             return _empty_memory()
 
+
 def _all_entries(memory: dict) -> list[tuple]:
     entries = []
     for cat, items in memory.items():
@@ -56,16 +73,33 @@ def _all_entries(memory: dict) -> list[tuple]:
 
 
 def _trim_to_limit(memory: dict) -> dict:
+    """
+    BUG-FIX: was mutating memory dict while iterating over its entries.
+    Now collects (cat, key) pairs to remove, then deletes them separately.
+    """
     if len(json.dumps(memory, ensure_ascii=False)) <= MEMORY_MAX_CHARS:
         return memory
+
     entries = _all_entries(memory)
+    # Sort oldest-updated first so we remove stale entries preferentially
     entries.sort(key=lambda t: t[2].get("updated", "0000-00-00"))
+
+    to_delete: list[tuple[str, str]] = []
     for cat, key, _ in entries:
         if len(json.dumps(memory, ensure_ascii=False)) <= MEMORY_MAX_CHARS:
             break
-        del memory[cat][key]
-        print(f"[Memory] 🗑️  Trimmed {cat}/{key}")
+        to_delete.append((cat, key))
+
+    # Second pass: delete collected keys
+    for cat, key in to_delete:
+        try:
+            del memory[cat][key]
+            print(f"[Memory] 🗑️  Trimmed {cat}/{key}")
+        except KeyError:
+            pass
+
     return memory
+
 
 def save_memory(memory: dict) -> None:
     if not isinstance(memory, dict):
@@ -116,6 +150,7 @@ def update_memory(memory_update: dict) -> dict:
         save_memory(memory)
         print(f"[Memory] 💾 Saved: {list(memory_update.keys())}")
     return memory
+
 
 def format_memory_for_prompt(memory: dict | None) -> str:
     if not memory:
@@ -192,6 +227,7 @@ def format_memory_for_prompt(memory: dict | None) -> str:
         result = result[:1997] + "…"
 
     return result + "\n"
+
 
 def remember(key: str, value: str, category: str = "notes") -> str:
     valid = {"identity", "preferences", "projects", "relationships", "wishes", "notes"}

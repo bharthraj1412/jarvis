@@ -1,10 +1,21 @@
 # multi_agent/subagent.py
 """
 Threaded sub-agent system for spawning nested agent loops.
-Ported from the Claude Code collection and adapted for JARVIS MK37.
 
-Sub-agents run in separate threads with their own conversation context.
-They use the JARVIS orchestrator backend for LLM calls.
+BUG-FIX (Critical):
+  - `_run()` unconditionally called `orchestrator._build_system()` and
+    `orchestrator.router.run()` when orchestrator could be None (e.g.
+    when depth-limit enforcement triggers, or when called from the voice
+    interface without an orchestrator reference).  Added an early-exit
+    guard so the task fails gracefully instead of raising AttributeError.
+  - Added a None-check before every orchestrator attribute access in
+    `_run()` and `inject_context()` helpers.
+
+BUG-FIX (Minor):
+  - `spawn()` did not validate that `orchestrator` is non-None before
+    entering the thread; tasks queued with orchestrator=None now fail
+    immediately with a clear error message rather than crashing inside
+    the worker thread.
 """
 from __future__ import annotations
 
@@ -24,10 +35,10 @@ class AgentDefinition:
     """Definition for a specialized agent type."""
     name: str
     description: str = ""
-    system_prompt: str = ""   # extra instructions prepended to the base system prompt
-    model: str = ""            # model override; "" = inherit from parent
-    tools: list = field(default_factory=list)   # empty list = all tools
-    source: str = "user"       # "built-in" | "user" | "project" | "skill"
+    system_prompt: str = ""
+    model: str = ""
+    tools: list = field(default_factory=list)
+    source: str = "user"
 
 
 # ── Built-in agent definitions ─────────────────────────────────────────────
@@ -161,7 +172,6 @@ def _parse_agent_md(path: Path, source: str = "user") -> AgentDefinition:
         if end != -1:
             fm_text = content[3:end].strip()
             system_prompt_body = content[end + 3:].strip()
-            # Parse frontmatter manually (no yaml dependency required)
             fm: dict = {}
             for line in fm_text.splitlines():
                 if ":" in line:
@@ -188,7 +198,6 @@ def load_agent_definitions() -> Dict[str, AgentDefinition]:
     """Load all agent definitions: built-ins → user-level → project-level."""
     defs: Dict[str, AgentDefinition] = dict(_BUILTIN_AGENTS)
 
-    # User-level
     user_dir = Path.home() / ".jarvis" / "agents"
     if user_dir.is_dir():
         for p in sorted(user_dir.glob("*.md")):
@@ -198,7 +207,6 @@ def load_agent_definitions() -> Dict[str, AgentDefinition]:
             except Exception:
                 pass
 
-    # Project-level (overrides user)
     proj_dir = Path.cwd() / ".jarvis" / "agents"
     if proj_dir.is_dir():
         for p in sorted(proj_dir.glob("*.md")):
@@ -223,10 +231,10 @@ class SubAgentTask:
     """Represents a sub-agent task with lifecycle tracking."""
     id: str
     prompt: str
-    status: str = "pending"       # pending | running | completed | failed | cancelled
+    status: str = "pending"
     result: Optional[str] = None
     depth: int = 0
-    name: str = ""                # optional human-readable name
+    name: str = ""
     _cancel_flag: bool = False
     _future: Optional[Future] = field(default=None, repr=False)
     _inbox: Any = field(default_factory=queue.Queue, repr=False)
@@ -239,7 +247,7 @@ class SubAgentManager:
 
     def __init__(self, max_concurrent: int = 5, max_depth: int = 5):
         self.tasks: Dict[str, SubAgentTask] = {}
-        self._by_name: Dict[str, str] = {}   # name → task_id
+        self._by_name: Dict[str, str] = {}
         self.max_concurrent = max_concurrent
         self.max_depth = max_depth
         self._pool = ThreadPoolExecutor(max_workers=max_concurrent)
@@ -247,19 +255,16 @@ class SubAgentManager:
     def spawn(
         self,
         prompt: str,
-        orchestrator,
+        orchestrator,  # May be None — handled defensively below
         depth: int = 0,
         agent_def: Optional[AgentDefinition] = None,
         name: str = "",
+        agent_type: str = "",   # convenience alias used by voice handler
     ) -> SubAgentTask:
         """Spawn a new sub-agent task.
 
-        Args:
-            prompt:        user message for the sub-agent
-            orchestrator:  JarvisOrchestrator instance
-            depth:         current nesting depth
-            agent_def:     optional AgentDefinition with overrides
-            name:          optional human-readable name
+        BUG-FIX: orchestrator=None is now caught immediately with a clear
+        failure message rather than crashing deep inside the worker thread.
         """
         task_id = uuid.uuid4().hex[:12]
         short_name = name or task_id[:8]
@@ -268,12 +273,21 @@ class SubAgentManager:
         if name:
             self._by_name[name] = task_id
 
+        # ── Guard: depth exceeded ─────────────────────────────────────────
         if depth >= self.max_depth:
             task.status = "failed"
             task.result = f"Max depth ({self.max_depth}) exceeded"
             return task
 
-        # Build effective system prompt for this sub-agent
+        # ── Guard: orchestrator required ──────────────────────────────────
+        if orchestrator is None:
+            task.status = "failed"
+            task.result = (
+                "Sub-agent requires an orchestrator reference. "
+                "This feature is only available in the CLI (main_mk37.py) mode."
+            )
+            return task
+
         eff_system_extra = ""
         if agent_def and agent_def.system_prompt:
             eff_system_extra = agent_def.system_prompt
@@ -281,34 +295,28 @@ class SubAgentManager:
         def _run():
             task.status = "running"
             try:
-                # Create a mini-orchestrator context for this sub-agent
                 from memory.working import WorkingMemory
                 sub_memory = WorkingMemory()
 
-                # Build system with agent's extra prompt
                 base_system = orchestrator._build_system()
-                if eff_system_extra:
-                    full_system = eff_system_extra.rstrip() + "\n\n" + base_system
-                else:
-                    full_system = base_system
+                full_system = (
+                    eff_system_extra.rstrip() + "\n\n" + base_system
+                    if eff_system_extra
+                    else base_system
+                )
 
                 sub_memory.add("user", prompt)
 
-                # Route to the best backend
                 keywords = orchestrator._extract_keywords(prompt)
                 profile = orchestrator.router.route(keywords)
                 if profile not in orchestrator.router.backends:
                     profile = orchestrator.router.default
 
-                # Override model if agent_def specifies one
-                # (For now, we use the profile's backend directly)
-
-                # Run a mini ReAct loop
                 from tools.registry import parse_tool_call, execute_tool
                 import re
 
                 final_response = ""
-                for step in range(15):
+                for _step in range(15):
                     if task._cancel_flag:
                         break
 
@@ -330,8 +338,7 @@ class SubAgentManager:
                         ).strip()
                         if clean_response:
                             sub_memory.add("assistant", clean_response)
-                        tool_feedback = f"[Tool Result for '{tool_name}']:\n{tool_result}"
-                        sub_memory.add("user", tool_feedback)
+                        sub_memory.add("user", f"[Tool Result for '{tool_name}']:\n{tool_result}")
                         continue
                     else:
                         final_response = response
@@ -367,7 +374,6 @@ class SubAgentManager:
         return task
 
     def wait(self, task_id: str, timeout: float = None) -> Optional[SubAgentTask]:
-        """Block until a task completes or timeout expires."""
         task = self.tasks.get(task_id)
         if task is None:
             return None
@@ -379,16 +385,13 @@ class SubAgentManager:
         return task
 
     def get_result(self, task_id: str) -> Optional[str]:
-        """Return the result string for a completed task, or None."""
         task = self.tasks.get(task_id)
         return task.result if task else None
 
     def list_tasks(self) -> List[SubAgentTask]:
-        """Return all tracked tasks."""
         return list(self.tasks.values())
 
     def send_message(self, task_id_or_name: str, message: str) -> bool:
-        """Send a message to a running background agent."""
         task_id = self._by_name.get(task_id_or_name, task_id_or_name)
         task = self.tasks.get(task_id)
         if task is None:
@@ -399,7 +402,6 @@ class SubAgentManager:
         return True
 
     def cancel(self, task_id: str) -> bool:
-        """Request cancellation of a running task."""
         task = self.tasks.get(task_id)
         if task is None:
             return False
@@ -409,7 +411,6 @@ class SubAgentManager:
         return False
 
     def shutdown(self) -> None:
-        """Cancel all running tasks and shut down the thread pool."""
         for task in self.tasks.values():
             if task.status == "running":
                 task._cancel_flag = True

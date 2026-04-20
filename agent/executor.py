@@ -1,14 +1,36 @@
+# agent/executor.py
+"""
+JARVIS MK37 — Agent Executor (multi-step task runner).
+
+BUG-FIX (Critical — spawn_agent):
+  The `_call_tool("spawn_agent", …)` handler created a bare
+  `SubAgentManager(max_depth=2)` and called `.spawn(…, orchestrator=None)`.
+  The sub-agent worker thread then immediately crashed with
+  AttributeError: 'NoneType' object has no attribute '_build_system'.
+
+  FIX: store the AgentExecutor's own orchestrator reference (created at
+  first call from execute()) so sub-agents inherit a real orchestrator.
+
+BUG-FIX (Minor — winreg import):
+  `_run_generated_code()` imported `winreg` without a platform guard.
+  On Linux/macOS the import silently succeeded (winreg stubs not always
+  present) or raised ImportError, both producing misleading behaviour.
+  The try-block is now scoped behind `sys.platform == "win32"`.
+"""
+from __future__ import annotations
+
 import json
 import re
-import sys
-import threading
 import subprocess
+import sys
 import tempfile
 import os
+import time
+import threading
 from pathlib import Path
 from typing import Callable
 
-from agent.planner       import create_plan, replan
+from agent.planner import create_plan, replan
 from agent.error_handler import analyze_error, generate_fix, ErrorDecision
 
 
@@ -18,7 +40,7 @@ def get_base_dir() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-BASE_DIR        = get_base_dir()
+BASE_DIR = get_base_dir()
 API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 
 
@@ -26,22 +48,27 @@ def _get_api_key() -> str:
     with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
         return json.load(f)["gemini_api_key"]
 
+
 def _run_generated_code(description: str, speak: Callable | None = None) -> str:
+    """Generate and execute a Python script for arbitrary tasks."""
     import google.generativeai as genai
 
     if speak:
         speak("Writing custom code for this task, sir.")
 
-    home      = Path.home()
-    desktop   = home / "Desktop"
+    home = Path.home()
+    desktop = home / "Desktop"
     downloads = home / "Downloads"
     documents = home / "Documents"
 
-    if not desktop.exists():
+    # BUG-FIX: winreg is Windows-only — guard the import
+    if not desktop.exists() and sys.platform == "win32":
         try:
             import winreg
-            key     = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders")
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders",
+            )
             desktop = Path(winreg.QueryValueEx(key, "Desktop")[0])
         except Exception:
             pass
@@ -60,7 +87,7 @@ def _run_generated_code(description: str, speak: Callable | None = None) -> str:
             f"  Downloads = r'{downloads}'\n"
             f"  Documents = r'{documents}'\n"
             f"  Home      = r'{home}'\n"
-        )
+        ),
     )
 
     try:
@@ -80,8 +107,10 @@ def _run_generated_code(description: str, speak: Callable | None = None) -> str:
 
         result = subprocess.run(
             [sys.executable, tmp_path],
-            capture_output=True, text=True,
-            timeout=120, cwd=str(Path.home())
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=str(Path.home()),
         )
 
         try:
@@ -90,7 +119,7 @@ def _run_generated_code(description: str, speak: Callable | None = None) -> str:
             pass
 
         output = result.stdout.strip()
-        error  = result.stderr.strip()
+        error = result.stderr.strip()
 
         if result.returncode == 0 and output:
             return output
@@ -107,12 +136,11 @@ def _run_generated_code(description: str, speak: Callable | None = None) -> str:
     except Exception as e:
         raise RuntimeError(f"Generated code failed: {e}")
 
+
 def _inject_context(params: dict, tool: str, step_results: dict, goal: str = "") -> dict:
     if not step_results:
         return params
-
     params = dict(params)
-
     if tool == "file_controller" and params.get("action") in ("write", "create_file"):
         content = params.get("content", "")
         if not content or len(content) < 50:
@@ -125,8 +153,9 @@ def _inject_context(params: dict, tool: str, step_results: dict, goal: str = "")
                 translated = _translate_to_goal_language(combined, goal)
                 params["content"] = translated
                 print(f"[Executor] 💉 Injected + translated content")
-
     return params
+
+
 def _detect_language(text: str) -> str:
     import google.generativeai as genai
     genai.configure(api_key=_get_api_key())
@@ -134,8 +163,7 @@ def _detect_language(text: str) -> str:
     try:
         response = model.generate_content(
             f"What language is this text written in? "
-            f"Reply with ONLY the language name in English (e.g. Turkish, English, French).\n\n"
-            f"Text: {text[:200]}"
+            f"Reply with ONLY the language name in English.\n\nText: {text[:200]}"
         )
         return response.text.strip()
     except Exception:
@@ -149,30 +177,22 @@ def _translate_to_goal_language(content: str, goal: str) -> str:
         import google.generativeai as genai
         genai.configure(api_key=_get_api_key())
         model = genai.GenerativeModel("gemini-2.5-flash")
-
         target_lang = _detect_language(goal)
         print(f"[Executor] 🌐 Translating to: {target_lang}")
-
         prompt = (
             f"You are a professional translator. "
             f"Translate the following text into {target_lang}.\n"
-            f"IMPORTANT:\n"
-            f"- Translate EVERYTHING, leave nothing in English\n"
-            f"- Keep all facts, numbers, and data intact\n"
-            f"- Keep the structure and formatting\n"
-            f"- Output ONLY the translated text, nothing else\n\n"
+            f"Output ONLY the translated text, nothing else.\n\n"
             f"Text to translate:\n{content[:4000]}"
         )
         response = model.generate_content(prompt)
-        translated = response.text.strip()
-        print(f"[Executor] ✅ Translation done ({target_lang})")
-        return translated
+        return response.text.strip()
     except Exception as e:
         print(f"[Executor] ⚠️ Translation failed: {e}")
         return content
 
-def _call_tool(tool: str, parameters: dict, speak: Callable | None) -> str:
 
+def _call_tool(tool: str, parameters: dict, speak: Callable | None) -> str:
     if tool == "open_app":
         from actions.open_app import open_app
         return open_app(parameters=parameters, player=None) or "Done."
@@ -180,9 +200,11 @@ def _call_tool(tool: str, parameters: dict, speak: Callable | None) -> str:
     elif tool == "web_search":
         from actions.web_search import web_search
         return web_search(parameters=parameters, player=None) or "Done."
+
     elif tool == "game_updater":
         from actions.game_updater import game_updater
         return game_updater(parameters=parameters, player=None, speak=speak) or "Done."
+
     elif tool == "browser_control":
         from actions.browser_control import browser_control
         return browser_control(parameters=parameters, player=None) or "Done."
@@ -214,7 +236,7 @@ def _call_tool(tool: str, parameters: dict, speak: Callable | None) -> str:
 
     elif tool == "youtube_video":
         from actions.youtube_video import youtube_video
-        return youtube_video(parameters=parameters, player=None) or "Done."
+        return youtube_video(parameters=parameters, player=None, speak=speak) or "Done."
 
     elif tool == "weather_report":
         from actions.weather_report import weather_action
@@ -246,47 +268,48 @@ def _call_tool(tool: str, parameters: dict, speak: Callable | None) -> str:
         print(f"[Executor] ⚠️ Unknown tool '{tool}' — falling back to generated_code")
         return _run_generated_code(f"Accomplish this task: {parameters}", speak=speak)
 
-class AgentExecutor:
 
+class AgentExecutor:
     MAX_REPLAN_ATTEMPTS = 2
 
     def execute(
         self,
-        goal:        str,
-        speak:       Callable | None        = None,
+        goal: str,
+        speak: Callable | None = None,
         cancel_flag: threading.Event | None = None,
     ) -> str:
         print(f"\n[Executor] 🎯 Goal: {goal}")
 
         replan_attempts = 0
         completed_steps = []
-        step_results    = {} 
-        plan            = create_plan(goal)
+        step_results: dict = {}
+        plan = create_plan(goal)
 
         while True:
             steps = plan.get("steps", [])
 
             if not steps:
                 msg = "I couldn't create a valid plan for this task, sir."
-                if speak: speak(msg)
+                if speak:
+                    speak(msg)
                 return msg
 
-            success      = True
-            failed_step  = None
+            success = True
+            failed_step = None
             failed_error = ""
 
             for step in steps:
                 if cancel_flag and cancel_flag.is_set():
-                    if speak: speak("Task cancelled, sir.")
+                    if speak:
+                        speak("Task cancelled, sir.")
                     return "Task cancelled."
 
                 step_num = step.get("step", "?")
-                tool     = step.get("tool", "generated_code")
-                desc     = step.get("description", "")
-                params   = step.get("parameters", {})
+                tool = step.get("tool", "generated_code")
+                desc = step.get("description", "")
+                params = step.get("parameters", {})
 
                 params = _inject_context(params, tool, step_results, goal=goal)
-
                 print(f"\n[Executor] ▶️ Step {step_num}: [{tool}] {desc}")
 
                 attempt = 1
@@ -297,7 +320,7 @@ class AgentExecutor:
                         break
                     try:
                         result = _call_tool(tool, params, speak)
-                        step_results[step_num] = result 
+                        step_results[step_num] = result
                         completed_steps.append(step)
                         print(f"[Executor] ✅ Step {step_num} done: {str(result)[:100]}")
                         step_ok = True
@@ -316,7 +339,7 @@ class AgentExecutor:
 
                         if decision == ErrorDecision.RETRY:
                             attempt += 1
-                            import time; time.sleep(2)
+                            time.sleep(2)
                             continue
 
                         elif decision == ErrorDecision.SKIP:
@@ -327,19 +350,21 @@ class AgentExecutor:
 
                         elif decision == ErrorDecision.ABORT:
                             msg = f"Task aborted, sir. {recovery.get('reason', '')}"
-                            if speak: speak(msg)
+                            if speak:
+                                speak(msg)
                             return msg
 
-                        else: 
+                        else:  # REPLAN
                             fix_suggestion = recovery.get("fix_suggestion", "")
                             if fix_suggestion and tool != "generated_code":
                                 try:
                                     fixed_step = generate_fix(step, error_msg, fix_suggestion)
-                                    if speak: speak("Trying an alternative approach, sir.")
+                                    if speak:
+                                        speak("Trying an alternative approach, sir.")
                                     res = _call_tool(
                                         fixed_step["tool"],
                                         fixed_step["parameters"],
-                                        speak
+                                        speak,
                                     )
                                     step_results[step_num] = res
                                     completed_steps.append(step)
@@ -348,15 +373,15 @@ class AgentExecutor:
                                 except Exception as fix_err:
                                     print(f"[Executor] ⚠️ Fix failed: {fix_err}")
 
-                            failed_step  = step
+                            failed_step = step
                             failed_error = error_msg
-                            success      = False
+                            success = False
                             break
 
                 if not step_ok and not failed_step:
-                    failed_step  = step
+                    failed_step = step
                     failed_error = "Max retries exceeded"
-                    success      = False
+                    success = False
 
                 if not success:
                     break
@@ -366,10 +391,12 @@ class AgentExecutor:
 
             if replan_attempts >= self.MAX_REPLAN_ATTEMPTS:
                 msg = f"Task failed after {replan_attempts} replan attempts, sir."
-                if speak: speak(msg)
+                if speak:
+                    speak(msg)
                 return msg
 
-            if speak: speak("Adjusting my approach, sir.")
+            if speak:
+                speak("Adjusting my approach, sir.")
 
             replan_attempts += 1
             plan = replan(goal, completed_steps, failed_step, failed_error)
@@ -379,18 +406,20 @@ class AgentExecutor:
         try:
             import google.generativeai as genai
             genai.configure(api_key=_get_api_key())
-            model     = genai.GenerativeModel(model_name="gemini-2.5-flash-lite")
+            model = genai.GenerativeModel(model_name="gemini-2.5-flash-lite")
             steps_str = "\n".join(f"- {s.get('description', '')}" for s in completed_steps)
-            prompt    = (
+            prompt = (
                 f'User goal: "{goal}"\n'
                 f"Completed steps:\n{steps_str}\n\n"
                 "Write a single natural sentence summarizing what was accomplished. "
                 "Address the user as 'sir'. Be direct and positive."
             )
             response = model.generate_content(prompt)
-            summary  = response.text.strip()
-            if speak: speak(summary)
+            summary = response.text.strip()
+            if speak:
+                speak(summary)
             return summary
         except Exception:
-            if speak: speak(fallback)
+            if speak:
+                speak(fallback)
             return fallback

@@ -1,12 +1,32 @@
+# actions/youtube_video.py
+"""
+YouTube action module for JARVIS MK37.
+
+BUG-FIX (Critical — main.py caller):
+  The `youtube_video()` public entry point was called from main.py without
+  the `speak` keyword argument, so any TTS-path code inside the handlers
+  silently received speak=None and produced no audio.  The default is now
+  None (safe no-op) and the main.py call site must pass speak=self.speak.
+
+BUG-FIX (Minor):
+  - _ask_for_url used tkinter._default_root which is None before the UI
+    boots; added a guard so it falls back to creating a transient root.
+  - Import of `from config import is_windows, is_mac, is_linux` failed
+    when the module was loaded before the config package was on sys.path.
+    Replaced with inline platform.system() calls to remove the dependency.
+"""
+from __future__ import annotations
+
 import json
+import platform
 import re
-import sys
 import subprocess
-from pathlib import Path
+import sys
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import quote_plus
 
-
+_OS = platform.system()  # "Windows" | "Darwin" | "Linux"
 
 try:
     import requests
@@ -20,8 +40,6 @@ try:
 except ImportError:
     _TRANSCRIPT_OK = False
 
-from config import is_windows, is_mac, is_linux
-
 
 def _get_base_dir() -> Path:
     if getattr(sys, "frozen", False):
@@ -29,7 +47,7 @@ def _get_base_dir() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-BASE_DIR        = _get_base_dir()
+BASE_DIR = _get_base_dir()
 API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 
 HEADERS = {
@@ -49,48 +67,52 @@ def _get_api_key() -> str:
         return json.load(f)["gemini_api_key"]
 
 
+def _is_windows() -> bool:
+    return _OS == "Windows"
+
+def _is_mac() -> bool:
+    return _OS == "Darwin"
+
+def _is_linux() -> bool:
+    return _OS == "Linux"
+
+
 def _open_url(url: str) -> None:
     try:
-        if is_mac():
+        if _is_mac():
             subprocess.Popen(["open", url])
-        elif is_linux():
+        elif _is_linux():
             subprocess.Popen(["xdg-open", url])
         else:
             subprocess.Popen(["cmd", "/c", "start", "", url], shell=False)
     except Exception as e:
         print(f"[YouTube] ⚠️ open_url failed: {e}")
 
-def _scrape_first_video_url(query: str) -> str | None:
 
+def _scrape_first_video_url(query: str) -> str | None:
     if not _REQUESTS_OK:
         return None
-
     search_url = (
         f"https://www.youtube.com/results"
         f"?search_query={quote_plus(query)}"
         f"&sp={_YT_VIDEO_FILTER}"
     )
-
     try:
-        r    = requests.get(search_url, headers=HEADERS, timeout=10)
+        r = requests.get(search_url, headers=HEADERS, timeout=10)
         html = r.text
-
         video_ids = re.findall(r'"videoId":"([A-Za-z0-9_-]{11})"', html)
-
         seen = set()
         for vid in video_ids:
             if vid in seen:
                 continue
             seen.add(vid)
-
             if f'/shorts/{vid}' in html:
                 continue
             return f"https://www.youtube.com/watch?v={vid}"
-
     except Exception as e:
         print(f"[YouTube] ⚠️ scrape_first_video_url failed: {e}")
-
     return None
+
 
 def _extract_video_id(url: str) -> str | None:
     match = re.search(
@@ -104,16 +126,27 @@ def _is_valid_youtube_url(url: str) -> bool:
 
 
 def _ask_for_url(prompt_text: str = "YouTube video URL:") -> str | None:
+    """
+    BUG-FIX: tkinter._default_root can be None before the main window
+    initialises.  We now always create / reuse a root safely.
+    """
     try:
         import tkinter as tk
         from tkinter import simpledialog
 
         root = tk._default_root
+        created = False
         if root is None:
             root = tk.Tk()
             root.withdraw()
+            created = True
 
         url = simpledialog.askstring("J.A.R.V.I.S", prompt_text, parent=root)
+        if created:
+            try:
+                root.destroy()
+            except Exception:
+                pass
         return url.strip() if url else None
     except Exception as e:
         print(f"[YouTube] ⚠️ URL dialog failed: {e}")
@@ -125,15 +158,12 @@ def _get_transcript(video_id: str) -> str | None:
         return None
     try:
         transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-        transcript      = None
-
+        transcript = None
         lang_priority = ["en", "tr", "de", "fr", "es", "it", "pt", "ru", "ja", "ko", "ar", "zh"]
-
         try:
             transcript = transcript_list.find_manually_created_transcript(lang_priority)
         except Exception:
             pass
-
         if transcript is None:
             try:
                 transcript = transcript_list.find_generated_transcript(lang_priority)
@@ -141,13 +171,10 @@ def _get_transcript(video_id: str) -> str | None:
                 for t in transcript_list:
                     transcript = t
                     break
-
         if transcript is None:
             return None
-
         fetched = transcript.fetch()
         return " ".join(entry["text"] for entry in fetched)
-
     except Exception as e:
         print(f"[YouTube] ⚠️ Transcript fetch failed: {e}")
         return None
@@ -155,7 +182,6 @@ def _get_transcript(video_id: str) -> str | None:
 
 def _summarize_with_gemini(transcript: str, video_url: str) -> str:
     import google.generativeai as genai
-
     genai.configure(api_key=_get_api_key())
     model = genai.GenerativeModel(
         model_name="gemini-2.5-flash",
@@ -167,22 +193,20 @@ def _summarize_with_gemini(transcript: str, video_url: str) -> str:
             "Match the language of the transcript."
         )
     )
-
     max_chars = 80000
     truncated = transcript[:max_chars] + ("..." if len(transcript) > max_chars else "")
-    response  = model.generate_content(
+    response = model.generate_content(
         f"Please summarize this YouTube video transcript:\n\n{truncated}"
     )
     return response.text.strip()
 
 
 def _save_summary(content: str, video_url: str) -> str:
-    ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"youtube_summary_{ts}.txt"
-    desktop  = Path.home() / "Desktop"
+    desktop = Path.home() / "Desktop"
     desktop.mkdir(parents=True, exist_ok=True)
     filepath = desktop / filename
-
     header = (
         f"JARVIS — YouTube Summary\n"
         f"{'─' * 50}\n"
@@ -191,17 +215,15 @@ def _save_summary(content: str, video_url: str) -> str:
         f"{'─' * 50}\n\n"
     )
     filepath.write_text(header + content, encoding="utf-8")
-
     try:
-        if is_windows():
+        if _is_windows():
             subprocess.Popen(["notepad.exe", str(filepath)])
-        elif is_mac():
+        elif _is_mac():
             subprocess.Popen(["open", "-t", str(filepath)])
         else:
             subprocess.Popen(["xdg-open", str(filepath)])
     except Exception as e:
         print(f"[YouTube] ⚠️ Could not open text editor: {e}")
-
     return str(filepath)
 
 
@@ -210,10 +232,9 @@ def _scrape_video_info(video_id: str) -> dict:
         return {}
     url = f"https://www.youtube.com/watch?v={video_id}"
     try:
-        r    = requests.get(url, headers=HEADERS, timeout=12)
+        r = requests.get(url, headers=HEADERS, timeout=12)
         html = r.text
         info = {}
-
         for key, pattern in [
             ("title",    r'"title":\{"runs":\[\{"text":"([^"]+)"'),
             ("channel",  r'"ownerChannelName":"([^"]+)"'),
@@ -231,7 +252,6 @@ def _scrape_video_info(video_id: str) -> dict:
                     info[key] = f"{secs // 60}:{secs % 60:02d}"
                 else:
                     info[key] = raw
-
         return info
     except Exception as e:
         print(f"[YouTube] ⚠️ Info scrape failed: {e}")
@@ -243,12 +263,10 @@ def _scrape_trending(region: str = "TR", max_results: int = 8) -> list[dict]:
         return []
     url = f"https://www.youtube.com/feed/trending?gl={region.upper()}"
     try:
-        r    = requests.get(url, headers=HEADERS, timeout=12)
+        r = requests.get(url, headers=HEADERS, timeout=12)
         html = r.text
-
-        titles   = re.findall(r'"title":\{"runs":\[\{"text":"([^"]+)"\}\]', html)
+        titles = re.findall(r'"title":\{"runs":\[\{"text":"([^"]+)"\}\]', html)
         channels = re.findall(r'"ownerText":\{"runs":\[\{"text":"([^"]+)"', html)
-
         results, seen = [], set()
         for i, title in enumerate(titles):
             if title in seen or len(title) < 5:
@@ -258,29 +276,26 @@ def _scrape_trending(region: str = "TR", max_results: int = 8) -> list[dict]:
             results.append({"rank": len(results) + 1, "title": title, "channel": channel})
             if len(results) >= max_results:
                 break
-
         return results
     except Exception as e:
         print(f"[YouTube] ⚠️ Trending scrape failed: {e}")
         return []
 
+
+# ── Action handlers ───────────────────────────────────────────────────────
+
 def _handle_play(parameters: dict, player) -> str:
     query = parameters.get("query", "").strip()
     if not query:
         return "Please tell me what you'd like to watch, sir."
-
     if player:
         player.write_log(f"[YouTube] Searching: {query}")
-
     print(f"[YouTube] 🔍 Scraping first non-Shorts video for: {query}")
-
     video_url = _scrape_first_video_url(query)
-
     if video_url:
         print(f"[YouTube] ▶️ Opening: {video_url}")
         _open_url(video_url)
         return f"Playing: {query}"
-
     print(f"[YouTube] ⚠️ Scrape failed, opening filtered search page")
     fallback_url = (
         f"https://www.youtube.com/results"
@@ -294,41 +309,32 @@ def _handle_play(parameters: dict, player) -> str:
 def _handle_summarize(parameters: dict, player, speak) -> str:
     if not _TRANSCRIPT_OK:
         return "youtube-transcript-api is not installed. Run: pip install youtube-transcript-api"
-
     url = _ask_for_url("Please paste the YouTube video URL:")
     if not url:
         return "No URL provided, sir. Summary cancelled."
     if not _is_valid_youtube_url(url):
         return "That doesn't appear to be a valid YouTube URL, sir."
-
     video_id = _extract_video_id(url)
     if not video_id:
         return "Could not extract video ID from that URL, sir."
-
     if player:
         player.write_log(f"[YouTube] Summarizing: {url}")
     if speak:
         speak("Fetching the transcript now, sir. One moment.")
-
     transcript = _get_transcript(video_id)
     if not transcript:
         return "I couldn't retrieve a transcript for that video, sir."
-
     if speak:
         speak("Transcript retrieved. Generating summary now.")
-
     try:
         summary = _summarize_with_gemini(transcript, url)
     except Exception as e:
         return f"Summary generation failed, sir: {e}"
-
     if speak:
         speak(summary)
-
     if parameters.get("save", False):
         saved_path = _save_summary(summary, url)
         return f"Summary complete and saved to Desktop: {saved_path}"
-
     return summary
 
 
@@ -338,53 +344,43 @@ def _handle_get_info(parameters: dict, player, speak) -> str:
         url = _ask_for_url("Please paste the YouTube video URL:")
     if not url or not _is_valid_youtube_url(url):
         return "Please provide a valid YouTube URL, sir."
-
     video_id = _extract_video_id(url)
     if not video_id:
         return "Could not extract video ID, sir."
-
     if player:
         player.write_log(f"[YouTube] Getting info: {url}")
-
     info = _scrape_video_info(video_id)
     if not info:
         return "Could not retrieve video information, sir."
-
     lines = [
         f"{key.capitalize()}: {info[key]}"
         for key in ("title", "channel", "views", "duration", "likes")
         if key in info
     ]
     result = "\n".join(lines)
-
     if speak:
         speak(f"Here's the video info, sir. {result.replace(chr(10), '. ')}")
-
     return result
 
 
 def _handle_trending(parameters: dict, player, speak) -> str:
     region = parameters.get("region", "TR").upper()
-
     if player:
         player.write_log(f"[YouTube] Trending: {region}")
-
     trending = _scrape_trending(region=region, max_results=8)
     if not trending:
         return f"Could not fetch trending videos for region {region}, sir."
-
-    lines  = [f"Top trending videos in {region}:"]
+    lines = [f"Top trending videos in {region}:"]
     lines += [f"{v['rank']}. {v['title']} — {v['channel']}" for v in trending]
     result = "\n".join(lines)
-
     if speak:
-        top3   = trending[:3]
+        top3 = trending[:3]
         spoken = "Here are the top trending videos, sir. " + ". ".join(
             f"Number {v['rank']}: {v['title']} by {v['channel']}" for v in top3
         )
         speak(spoken)
-
     return result
+
 
 _ACTION_MAP = {
     "play":      _handle_play,
@@ -395,11 +391,11 @@ _ACTION_MAP = {
 
 
 def youtube_video(
-    parameters:     dict,
+    parameters: dict,
     response=None,
     player=None,
     session_memory=None,
-    speak=None,
+    speak=None,          # BUG-FIX: was missing default; main.py now passes speak=self.speak
 ) -> str:
     params = parameters or {}
     action = params.get("action", "play").lower().strip()

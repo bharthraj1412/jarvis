@@ -1,11 +1,33 @@
+# actions/flight_finder.py
+"""
+Flight finder action for JARVIS MK37.
+
+BUG-FIX (Import):
+  `from config import is_windows, is_mac` relied on the `config` package
+  being importable at the point this module is first loaded.  In some
+  startup orders (e.g. when actions/ are imported before sys.path includes
+  the project root) this raised ImportError.
+
+  Replaced with an inline `platform.system()` helper so the module is
+  fully self-contained.
+"""
+from __future__ import annotations
+
 import json
+import platform
 import re
 import subprocess
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from config import is_windows, is_mac
+_OS = platform.system()  # "Windows" | "Darwin" | "Linux"
+
+
+def _is_windows() -> bool: return _OS == "Windows"
+def _is_mac()     -> bool: return _OS == "Darwin"
+def _is_linux()   -> bool: return _OS == "Linux"
+
 
 def _get_base_dir() -> Path:
     if getattr(sys, "frozen", False):
@@ -21,8 +43,8 @@ def _get_api_key() -> str:
     with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
         return json.load(f)["gemini_api_key"]
 
-_MONTH_MAP: dict[str, int] = {
 
+_MONTH_MAP: dict[str, int] = {
     "january": 1, "february": 2, "march": 3,     "april": 4,
     "may": 5,     "june": 6,     "july": 7,       "august": 8,
     "september": 9, "october": 10, "november": 11, "december": 12,
@@ -31,14 +53,8 @@ _MONTH_MAP: dict[str, int] = {
     "eylül": 9, "ekim": 10,  "kasım": 11, "aralık": 12,
 }
 
-_RELATIVE_MAP_KEYS = {
-    "today", "bugün",
-    "tomorrow", "yarın",
-}
-
 
 def _parse_date(raw: str) -> str:
-
     raw   = raw.strip()
     lower = raw.lower()
     today = datetime.now()
@@ -83,9 +99,9 @@ def _parse_date(raw: str) -> str:
                 year = today.year if month_num >= today.month else today.year + 1
                 return f"{year}-{month_num:02d}-{day:02d}"
 
-    # Last resort: today
     print(f"[FlightFinder] ⚠️ Could not parse date '{raw}' — using today.")
     return today.strftime("%Y-%m-%d")
+
 
 _CABIN_CODE: dict[str, str] = {
     "economy":  "1",
@@ -105,22 +121,17 @@ def _build_google_flights_url(
 ) -> str:
     cabin_code = _CABIN_CODE.get(cabin.lower(), "1")
     base       = "https://www.google.com/travel/flights"
-
-    # Google Flights accepts these query params for pre-filling
     if return_date:
         trip = f"Flights+from+{origin}+to+{destination}+on+{date}+returning+{return_date}"
     else:
         trip = f"Flights+from+{origin}+to+{destination}+on+{date}"
-
     return (
         f"{base}"
         f"?q={trip}"
-        f"&tfs=CBwQAhoeEgoyMDI1LTAzLTE1agcIARIDSVNUcgcIARIDTEhS"   
         f"&curr=USD"
         f"&cabin={cabin_code}"
         f"&adults={passengers}"
     )
-
 
 
 def _search_flights_browser(
@@ -134,16 +145,13 @@ def _search_flights_browser(
     import time
     from actions.browser_control import browser_control
 
-    url = _build_google_flights_url(
-        origin, destination, date, return_date, passengers, cabin
-    )
-
+    url = _build_google_flights_url(origin, destination, date, return_date, passengers, cabin)
     print(f"[FlightFinder] 🌐 Opening: {url}")
     browser_control({"action": "go_to", "url": url})
     time.sleep(5)
-
     raw = browser_control({"action": "get_text"})
     return (raw or ""), url
+
 
 def _parse_flights_with_gemini(
     raw_text:    str,
@@ -152,7 +160,6 @@ def _parse_flights_with_gemini(
     date:        str,
 ) -> list[dict]:
     import google.generativeai as genai
-
     genai.configure(api_key=_get_api_key())
     model = genai.GenerativeModel(
         model_name="gemini-2.5-flash",
@@ -162,7 +169,6 @@ def _parse_flights_with_gemini(
             "Return ONLY valid JSON — no markdown, no explanation."
         ),
     )
-
     prompt = (
         f"Extract flight options from {origin} to {destination} on {date} "
         f"from this Google Flights page text:\n\n{raw_text[:12000]}\n\n"
@@ -171,7 +177,6 @@ def _parse_flights_with_gemini(
         f'"duration":"Xh Ym","stops":0,"price":"...","currency":"USD"}}]\n'
         f"If no flights found, return: []"
     )
-
     try:
         response = model.generate_content(prompt)
         text     = re.sub(r"```(?:json)?", "", response.text).strip().rstrip("`").strip()
@@ -180,6 +185,7 @@ def _parse_flights_with_gemini(
     except Exception as e:
         print(f"[FlightFinder] ⚠️ Gemini parse failed: {e}")
         return []
+
 
 def _format_spoken(
     flights:     list[dict],
@@ -192,9 +198,7 @@ def _format_spoken(
             f"I couldn't find any flights from {origin} to {destination} "
             f"on {date}, sir. The page may not have loaded correctly."
         )
-
     lines = [f"Here are the top flights from {origin} to {destination} on {date}, sir."]
-
     for i, f in enumerate(flights[:5], 1):
         airline   = f.get("airline",   "Unknown airline")
         departure = f.get("departure", "--:--")
@@ -203,17 +207,13 @@ def _format_spoken(
         stops     = f.get("stops",     0)
         price     = f.get("price",     "")
         currency  = f.get("currency",  "")
-
         stop_str  = "non-stop" if stops == 0 else f"{stops} stop{'s' if stops > 1 else ''}"
         price_str = f"{price} {currency}".strip() if price else "price unavailable"
         dur_str   = f", {duration}" if duration else ""
-
         lines.append(
             f"Option {i}: {airline}, departing {departure}, "
             f"arriving {arrival}{dur_str}, {stop_str}, {price_str}."
         )
-
-    # Cheapest — strip non-digits for comparison
     priced = [f for f in flights if f.get("price")]
     if priced:
         cheapest = min(
@@ -224,7 +224,6 @@ def _format_spoken(
             f"The cheapest option is {cheapest.get('airline')} "
             f"at {cheapest.get('price')} {cheapest.get('currency', '')}."
         )
-
     return " ".join(lines)
 
 
@@ -250,7 +249,6 @@ def _format_text_report(
         "─" * 50,
         "",
     ]
-
     if not flights:
         lines.append("No flights found.")
     else:
@@ -267,8 +265,8 @@ def _format_text_report(
                 f"  Price     : {f.get('price', 'N/A')} {f.get('currency', '')}",
                 "",
             ]
-
     return "\n".join(lines)
+
 
 def _save_to_desktop(content: str, origin: str, destination: str) -> str:
     ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -276,26 +274,22 @@ def _save_to_desktop(content: str, origin: str, destination: str) -> str:
     desktop  = Path.home() / "Desktop"
     desktop.mkdir(parents=True, exist_ok=True)
     filepath = desktop / filename
-
     filepath.write_text(content, encoding="utf-8")
     print(f"[FlightFinder] 💾 Saved: {filepath}")
-
     try:
-        if is_windows():
+        if _is_windows():
             subprocess.Popen(["notepad.exe", str(filepath)])
-        elif is_mac():
+        elif _is_mac():
             subprocess.Popen(["open", "-t", str(filepath)])
         else:
             subprocess.Popen(["xdg-open", str(filepath)])
     except Exception as e:
         print(f"[FlightFinder] ⚠️ Could not open text editor: {e}")
-
     return str(filepath)
 
 
 def flight_finder(parameters: dict, player=None, speak=None) -> str:
     params = parameters or {}
-
     origin      = params.get("origin",      "").strip()
     destination = params.get("destination", "").strip()
     date_raw    = params.get("date",        "").strip()
@@ -308,8 +302,6 @@ def flight_finder(parameters: dict, player=None, speak=None) -> str:
         return "Please provide both origin and destination, sir."
     if not date_raw:
         return "Please provide a departure date, sir."
-
-    # Normalise cabin value
     if cabin not in _CABIN_CODE:
         cabin = "economy"
 
@@ -318,7 +310,6 @@ def flight_finder(parameters: dict, player=None, speak=None) -> str:
 
     if player:
         player.write_log(f"[FlightFinder] {origin} → {destination} on {date}")
-
     if speak:
         speak(f"Searching flights from {origin} to {destination} on {date}, sir.")
 
@@ -332,28 +323,20 @@ def flight_finder(parameters: dict, player=None, speak=None) -> str:
         raw_text, page_url = _search_flights_browser(
             origin, destination, date, return_date, passengers, cabin
         )
-
         if not raw_text:
             return "Could not retrieve flight data, sir. The page may not have loaded."
-
         if speak:
             speak("Analysing the results now, sir.")
-
         flights = _parse_flights_with_gemini(raw_text, origin, destination, date)
         spoken  = _format_spoken(flights, origin, destination, date)
-
         if speak:
             speak(spoken)
-
         result = spoken
-
         if save and flights:
             report     = _format_text_report(flights, origin, destination, date, return_date, page_url)
             saved_path = _save_to_desktop(report, origin, destination)
             result    += f" Results saved to Desktop: {saved_path}"
-
         return result
-
     except Exception as e:
         print(f"[FlightFinder] ❌ {e}")
         return f"Flight search failed, sir: {e}"

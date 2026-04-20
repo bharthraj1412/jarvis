@@ -738,7 +738,7 @@ class JarvisLive:
                 result = r or "Reminder set."
 
             elif name == "youtube_video":
-                r = await loop.run_in_executor(None, lambda: youtube_video(parameters=args, response=None, player=self.ui))
+                r = await loop.run_in_executor(None, lambda: youtube_video(parameters=args, response=None, player=self.ui, speak=self.speak))
                 result = r or "Done."
 
             elif name == "screen_process":
@@ -858,7 +858,6 @@ class JarvisLive:
                     from skills import load_skills, find_skill, execute_skill
                     skill_name = args.get("skill_name", "")
                     skill_args = args.get("arguments", "")
-                    # Find by name
                     skill = None
                     for s in load_skills():
                         if s.name == skill_name:
@@ -869,10 +868,18 @@ class JarvisLive:
                     if skill is None:
                         available = [s.name for s in load_skills()]
                         return f"Skill '{skill_name}' not found. Available: {', '.join(available)}"
-                    # Create a lightweight orchestrator bridge for skill execution
+
+                    # For fork-mode skills in voice context, fall back to inline execution
+                    # by using a simple bridge that calls the LLM via speak callback.
                     class _VoiceBridge:
                         def chat(self_bridge, message):
-                            return f"[Skill executed] {message[:200]}"
+                            # Inline: just return the rendered prompt so the
+                            # Gemini Live session processes it as a new turn.
+                            return f"[Skill: {skill.name}]\n\n{message[:2000]}"
+                        # Minimal stubs so fork-mode skills don't crash
+                        _subagent_mgr = None
+                        current_mode = "general"
+
                     return execute_skill(skill, skill_args, _VoiceBridge())
                 r = await loop.run_in_executor(None, _run_skill)
                 result = r or "Skill executed."
@@ -891,22 +898,20 @@ class JarvisLive:
                 result = r
 
             elif name == "spawn_agent":
-                def _spawn_agent():
-                    from multi_agent.subagent import SubAgentManager, get_agent_definition
-                    agent_type = args.get("agent_type", "general-purpose")
-                    task = args.get("task", "")
-                    try:
-                        get_agent_definition(agent_type)  # validate type exists
-                    except KeyError:
-                        from multi_agent.subagent import load_agent_definitions
-                        available = list(load_agent_definitions().keys())
-                        return f"Unknown agent type '{agent_type}'. Available: {', '.join(available)}"
-                    mgr = SubAgentManager(max_depth=2)
-                    task_obj = mgr.spawn(prompt=task, orchestrator=None, agent_type=agent_type)
-                    return f"Agent '{agent_type}' completed. Status: {task_obj.status}. Result: {task_obj.result[:500]}"
-                r = await loop.run_in_executor(None, _spawn_agent)
-                result = r or "Agent task completed."
-                self.ui.write_log(f"SYS: Sub-agent '{args.get('agent_type')}' finished.")
+                from multi_agent.subagent import SubAgentManager, get_agent_definition
+                agent_type = args.get("agent_type", "general-purpose")
+                task_prompt = args.get("task", "")
+                if not task_prompt:
+                    return types.FunctionResponse(
+                        id=fc.id, name=name,
+                        response={"result": "Please provide a task description for the agent."}
+                    )
+                # Voice interface has no orchestrator — inform user gracefully
+                result = (
+                    "Sub-agent spawning is only available in CLI mode (main_mk37.py), sir. "
+                    "Please switch to the terminal interface to use this feature."
+                )
+                self.ui.write_log(f"[spawn_agent] Voice mode — feature unavailable")
 
             elif name == "memory_save_mk37":
                 def _memory_save():
@@ -945,7 +950,6 @@ class JarvisLive:
                     query = args.get("query", "")
                     try:
                         from router import AgentRouter, AgentProfile
-                        # Try to build a minimal router with available backends
                         backends = {}
                         try:
                             from gemini_backend import GeminiBackend
@@ -961,7 +965,17 @@ class JarvisLive:
                             return "No MK37 backends available for ReAct orchestration."
                         router = AgentRouter(backends)
                         from orchestrator import JarvisOrchestrator
-                        orch = JarvisOrchestrator(router, use_vector_memory=False)
+                        # Use a temporary orchestrator that does NOT call
+                        # set_orchestrator_ref (avoids overwriting the voice ref).
+                        orch = JarvisOrchestrator.__new__(JarvisOrchestrator)
+                        orch.router = router
+                        orch.working_memory = __import__('memory.working', fromlist=['WorkingMemory']).WorkingMemory()
+                        orch.vector_memory = None
+                        orch.current_mode = "general"
+                        orch._subagent_mgr = None
+                        orch._session_store = None
+                        orch._session_id = ""
+                        orch._history_linker = None
                         return orch.chat(query)
                     except Exception as e:
                         return f"MK37 orchestrator error: {e}"

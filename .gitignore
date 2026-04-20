@@ -30,3 +30,6 @@ venv.bak/
 memory_db/
 *.sqlite3
 *.db
+
+# Backup directories
+_backup_pre_fix/
