@@ -1,5 +1,5 @@
 # 🤖 MARK XXXVII (37)
-### The Ultimate Cross-Platform Personal AI Assistant — By FatihMakes
+### The Ultimate Cross-Platform Personal AI Assistant — By Bharth Raj
 
 > 📺 **[Watch the full setup video on YouTube](https://www.youtube.com/watch?v=BhOsnGC_sAA)**
 
@@ -43,8 +43,8 @@ It's not just an assistant — it's an extension of your digital life.
 ## ⚡ Quick Start
 
 ```bash
-git clone https://github.com/FatihMakes/Jarvis-MK37.git
-cd Jarvis-MK37
+git clone https://github.com/bharthraj1412/jarvis.git
+cd jarvis
 pip install -r requirements.txt
 playwright install
 python main.py
@@ -74,10 +74,8 @@ Licensed under **[Creative Commons BY-NC 4.0](https://creativecommons.org/licens
 
 ## 👤 Connect with the Creator
 
-Engineered by an 18-year-old developer building a real JARVIS-style assistant.
-⭐ **Star the repository to support the journey to Mark 85.**
+⭐ **Star the repository to support the project.**
 
 | Platform | Link |
 |---|---|
-| YouTube | [@FatihMakes](https://www.youtube.com/@FatihMakes) |
-| Instagram | [@fatihmakes](https://www.instagram.com/fatihmakes) |
+| GitHub | [@bharthraj1412](https://github.com/bharthraj1412) |
