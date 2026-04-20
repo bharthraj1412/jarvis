@@ -1,5 +1,6 @@
 # redteam/vuln_scanner.py
 # Wraps standard authorized tools: nmap, nikto, nuclei
+from __future__ import annotations
 
 import subprocess
 from typing import TYPE_CHECKING

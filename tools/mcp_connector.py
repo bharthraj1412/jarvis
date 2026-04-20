@@ -1,5 +1,7 @@
 # tools/mcp_connector.py
 # Compatible with any MCP server (Claude Desktop, Open Claw, Paperclip, custom)
+from __future__ import annotations
+
 import httpx
 
 class MCPConnector:

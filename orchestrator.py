@@ -5,20 +5,24 @@ Implements a ReAct (Reason + Act) loop that allows any backend to use tools
 via a universal JSON-based tool_call protocol.
 
 Features:
-  - Multi-backend routing (Claude, GPT, Gemini, Ollama, NVIDIA)
+  - Multi-backend routing (Claude, GPT, Gemini, Ollama, NVIDIA, Mistral)
   - Skill detection and execution
   - Sub-agent management
   - Persistent memory injection
+  - Session history recording
   - Session consolidation on exit
   - Auto-allow permission model
 """
+from __future__ import annotations
 
 import re
+import time
+
 from router import AgentRouter
 from memory.working import WorkingMemory
 from tools.registry import get_tool_prompt_block, parse_tool_call, execute_tool, set_orchestrator_ref
 
-# ── System prompt ─────────────────────────────────────────────────────────────
+# ── System prompt ─────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """You are JARVIS MK37, a superhuman AI assistant built for a professional cybersecurity
 operator. You are intelligent, precise, direct, and adaptable. You never pad responses
@@ -79,6 +83,25 @@ class JarvisOrchestrator:
         self.current_mode = "general"
         self._subagent_mgr = None
 
+        # ── History integration ───────────────────────────────────────────
+        self._session_store = None
+        self._session_id: str = ""
+        self._history_linker = None
+        try:
+            from history.session_store import SessionStore
+            from history.linker import HistoryLinker
+            from history.audit_writer import set_session_id
+            self._session_store = SessionStore()
+            self._history_linker = HistoryLinker()
+            default_backend = router.default.value if hasattr(router, "default") else "gemini"
+            self._session_id = self._session_store.new_session(
+                mode=self.current_mode,
+                backend=default_backend,
+            )
+            set_session_id(self._session_id)
+        except Exception as e:
+            print(f"[JARVIS] History engine unavailable: {e}")
+
         # Register self as the orchestrator reference for tools
         set_orchestrator_ref(self)
 
@@ -88,6 +111,10 @@ class JarvisOrchestrator:
                 self.vector_memory = VectorMemory()
             except Exception as e:
                 print(f"[JARVIS] Vector memory unavailable: {e}")
+
+    @property
+    def session_id(self) -> str:
+        return self._session_id
 
     def _parse_mode(self, user_input: str) -> str | None:
         m = re.match(r"^/mode\s+(\w+)", user_input.strip())
@@ -113,8 +140,8 @@ class JarvisOrchestrator:
             mem_ctx = get_memory_context(include_guidance=True)
             if mem_ctx:
                 parts.append(f"\n{mem_ctx}")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[JARVIS] Memory context error: {e}")
 
         # Inject tool definitions
         parts.append(get_tool_prompt_block())
@@ -144,8 +171,8 @@ class JarvisOrchestrator:
             memories = self.vector_memory.recall(user_input, n=3)
             if memories:
                 return "[Recalled context from memory]:\n" + "\n---\n".join(memories) + "\n\n"
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[JARVIS] Vector recall error: {e}")
         return ""
 
     def _store_exchange(self, user_input: str, response: str):
@@ -157,8 +184,27 @@ class JarvisOrchestrator:
                 f"Q: {user_input}\nA: {response[:500]}",
                 metadata={"mode": self.current_mode},
             )
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[JARVIS] Vector store error: {e}")
+
+    def _record_turn(self, role: str, content: str, tool_name: str | None = None,
+                     tool_args: dict | None = None, tool_result: str | None = None,
+                     backend: str | None = None, latency_ms: int | None = None) -> None:
+        """Record a turn in the session history store."""
+        if self._session_store and self._session_id:
+            try:
+                self._session_store.add_turn(
+                    session_id=self._session_id,
+                    role=role,
+                    content=content[:5000],
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                    tool_result=tool_result,
+                    backend=backend,
+                    latency_ms=latency_ms,
+                )
+            except Exception:
+                pass  # History recording must never break the main loop
 
     def _check_skill(self, user_input: str) -> str | None:
         """Check if input matches a skill trigger and execute it."""
@@ -213,6 +259,7 @@ class JarvisOrchestrator:
         augmented = f"{memory_context}[User]: {user_input}" if memory_context else user_input
 
         self.working_memory.add("user", augmented)
+        self._record_turn("user", user_input)
 
         # Route to best backend
         keywords = self._extract_keywords(user_input)
@@ -227,11 +274,14 @@ class JarvisOrchestrator:
         # ── ReAct Loop ────────────────────────────────────────────────────
         final_response = ""
         for step in range(MAX_REACT_STEPS):
+            step_start = time.monotonic()
             try:
                 response = self.router.run(profile, self.working_memory.get(), system)
             except Exception as e:
                 final_response = f"Backend error ({profile.value}): {e}"
                 break
+
+            latency = int((time.monotonic() - step_start) * 1000)
 
             # Check if the response contains a tool call
             tool_name, tool_args = parse_tool_call(response)
@@ -239,7 +289,17 @@ class JarvisOrchestrator:
             if tool_name:
                 # Execute the tool — AUTO-ALLOW, no permission checks
                 print(f"[JARVIS] 🔧 Step {step+1}: Executing tool '{tool_name}' with args: {tool_args}")
+                tool_start = time.monotonic()
                 tool_result = execute_tool(tool_name, tool_args)
+                tool_latency = int((time.monotonic() - tool_start) * 1000)
+
+                # Record tool call in history
+                self._record_turn(
+                    "assistant", response[:2000],
+                    tool_name=tool_name, tool_args=tool_args,
+                    tool_result=tool_result[:2000],
+                    backend=profile.value, latency_ms=tool_latency,
+                )
 
                 # Strip the tool_call block from the response to get any reasoning text
                 clean_response = re.sub(
@@ -257,6 +317,7 @@ class JarvisOrchestrator:
             else:
                 # No tool call — this is the final response
                 final_response = response
+                self._record_turn("assistant", response[:5000], backend=profile.value, latency_ms=latency)
                 break
         else:
             # Hit max steps
@@ -267,18 +328,39 @@ class JarvisOrchestrator:
 
         return final_response
 
-    def consolidate_on_exit(self):
-        """Run session consolidation to extract long-term memories."""
+    def consolidate_on_exit(self) -> str:
+        """Run session consolidation to extract long-term memories. Returns summary text."""
+        summary = ""
         try:
             from memory.consolidator import consolidate_session
             saved = consolidate_session(self.working_memory.get(), router=self.router)
             if saved:
-                print(f"[JARVIS] 💾 Consolidated {len(saved)} memories: {', '.join(saved)}")
+                summary = f"Consolidated {len(saved)} memories: {', '.join(saved)}"
+                print(f"[JARVIS] 💾 {summary}")
+            else:
+                summary = "No new memories extracted."
         except Exception as e:
             print(f"[JARVIS] Consolidation skipped: {e}")
+            summary = f"Consolidation error: {e}"
+        return summary
 
     def shutdown(self):
         """Clean up resources on exit."""
-        self.consolidate_on_exit()
+        summary = self.consolidate_on_exit()
+
+        # Close the session in history store
+        if self._session_store and self._session_id:
+            try:
+                self._session_store.close_session(self._session_id, summary=summary)
+                # Embed session summary for semantic linking
+                if self._history_linker and self._history_linker.available:
+                    self._history_linker.on_session_close(
+                        self._session_id, summary,
+                        mode=self.current_mode,
+                        backend=self.router.default.value if hasattr(self.router, "default") else "",
+                    )
+            except Exception as e:
+                print(f"[JARVIS] History close error: {e}")
+
         if self._subagent_mgr:
             self._subagent_mgr.shutdown()

@@ -1,4 +1,6 @@
 # redteam/scope.py
+from __future__ import annotations
+
 import json
 import os
 from pathlib import Path
@@ -6,7 +8,7 @@ from ipaddress import ip_network, ip_address
 
 class ScopeEnforcer:
     def __init__(self, scope_file: str):
-        with open(scope_file) as f:
+        with open(scope_file, encoding="utf-8") as f:
             self.scope = json.load(f)
         # Expected keys: client, engagement_id, allowed_ips, allowed_domains,
         #                excluded_ips, start_date, end_date, rules_of_engagement

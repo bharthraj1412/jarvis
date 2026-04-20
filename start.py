@@ -1,4 +1,5 @@
 # start.py — JARVIS MK37 Unified Launcher
+from __future__ import annotations
 """
 Easy-start launcher for JARVIS MK37.
 Launches voice assistant, CLI, or both simultaneously.

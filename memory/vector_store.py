@@ -1,10 +1,15 @@
 # memory/vector_store.py
+from __future__ import annotations
+
 import chromadb
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
+from pathlib import Path
+
+_DB_PATH = str(Path(__file__).resolve().parent.parent / "memory_db")
 
 class VectorMemory:
     def __init__(self, collection_name: str = "jarvis"):
-        self.client = chromadb.PersistentClient(path="./memory_db")
+        self.client = chromadb.PersistentClient(path=_DB_PATH)
         self.ef = SentenceTransformerEmbeddingFunction(
             model_name="all-MiniLM-L6-v2"
         )

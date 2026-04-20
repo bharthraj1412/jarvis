@@ -1,5 +1,6 @@
 # redteam/recon.py
 # Uses only passive, publicly available data sources
+from __future__ import annotations
 
 import subprocess, socket, httpx
 from typing import TYPE_CHECKING

@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JARVIS MK37 — Screen Viewer</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #0a0a0f;
+            color: #e0e0e0;
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            overflow: hidden;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        .toolbar {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            padding: 8px 16px;
+            background: rgba(15, 15, 25, 0.95);
+            border-bottom: 1px solid rgba(100, 180, 255, 0.15);
+            backdrop-filter: blur(10px);
+            z-index: 10;
+            flex-shrink: 0;
+        }
+        .toolbar .logo {
+            font-weight: 700;
+            font-size: 14px;
+            color: #64b4ff;
+            letter-spacing: 1px;
+        }
+        .toolbar .logo span { color: #ff6464; }
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #555;
+            transition: background 0.3s;
+        }
+        .status-dot.connected { background: #4aff4a; box-shadow: 0 0 8px #4aff4a55; }
+        .status-dot.connecting { background: #ffaa00; animation: pulse 1s infinite; }
+        .status-dot.error { background: #ff4444; }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+        .status-text {
+            font-size: 12px;
+            color: #888;
+            min-width: 100px;
+        }
+        .fps-counter {
+            font-size: 12px;
+            color: #64b4ff;
+            font-family: 'Consolas', monospace;
+            min-width: 80px;
+        }
+        .toolbar button {
+            background: rgba(100, 180, 255, 0.1);
+            border: 1px solid rgba(100, 180, 255, 0.3);
+            color: #64b4ff;
+            padding: 4px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.2s;
+        }
+        .toolbar button:hover {
+            background: rgba(100, 180, 255, 0.25);
+            border-color: rgba(100, 180, 255, 0.6);
+        }
+        .toolbar button.active {
+            background: rgba(100, 180, 255, 0.3);
+            color: #fff;
+        }
+        .spacer { flex: 1; }
+        .canvas-container {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #050508;
+            position: relative;
+        }
+        canvas {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            image-rendering: auto;
+        }
+        .overlay {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            pointer-events: none;
+        }
+        .overlay .icon {
+            font-size: 48px;
+            margin-bottom: 12px;
+        }
+        .overlay .msg {
+            font-size: 16px;
+            color: #666;
+        }
+        .resolution-info {
+            font-size: 11px;
+            color: #555;
+            font-family: 'Consolas', monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="toolbar">
+        <div class="logo">JARVIS<span>MK37</span></div>
+        <div class="status-dot" id="statusDot"></div>
+        <div class="status-text" id="statusText">Disconnected</div>
+        <div class="fps-counter" id="fpsCounter">0 FPS</div>
+        <div class="resolution-info" id="resInfo">—</div>
+        <div class="spacer"></div>
+        <button id="btnPause">⏸ Pause</button>
+        <button id="btnFullscreen">⛶ Fullscreen</button>
+        <button id="btnReconnect">↻ Reconnect</button>
+    </div>
+
+    <div class="canvas-container" id="canvasContainer">
+        <canvas id="screen"></canvas>
+        <div class="overlay" id="overlay">
+            <div class="icon">📡</div>
+            <div class="msg" id="overlayMsg">Connecting to JARVIS screen share...</div>
+        </div>
+    </div>
+
+    <script>
+    (function() {
+        const canvas = document.getElementById('screen');
+        const ctx = canvas.getContext('2d');
+        const statusDot = document.getElementById('statusDot');
+        const statusText = document.getElementById('statusText');
+        const fpsCounter = document.getElementById('fpsCounter');
+        const resInfo = document.getElementById('resInfo');
+        const overlay = document.getElementById('overlay');
+        const overlayMsg = document.getElementById('overlayMsg');
+        const btnPause = document.getElementById('btnPause');
+        const btnFullscreen = document.getElementById('btnFullscreen');
+        const btnReconnect = document.getElementById('btnReconnect');
+        const container = document.getElementById('canvasContainer');
+
+        // Config from URL params
+        const params = new URLSearchParams(window.location.search);
+        const port = params.get('port') || '8765';
+        const host = params.get('host') || 'localhost';
+        const token = params.get('token') || '';
+        const wsUrl = `ws://${host}:${port}`;
+
+        let ws = null;
+        let paused = false;
+        let metaReceived = false;
+        let frameCount = 0;
+        let lastFpsUpdate = performance.now();
+        let currentFps = 0;
+        let reconnectTimer = null;
+        let reconnectDelay = 1000;
+        const maxReconnectDelay = 30000;
+
+        function setStatus(state, text) {
+            statusDot.className = 'status-dot ' + state;
+            statusText.textContent = text;
+        }
+
+        function showOverlay(msg) {
+            overlay.style.display = 'block';
+            overlayMsg.textContent = msg;
+        }
+
+        function hideOverlay() {
+            overlay.style.display = 'none';
+        }
+
+        function updateFps() {
+            const now = performance.now();
+            const elapsed = now - lastFpsUpdate;
+            if (elapsed >= 1000) {
+                currentFps = Math.round(frameCount * 1000 / elapsed);
+                fpsCounter.textContent = currentFps + ' FPS';
+                frameCount = 0;
+                lastFpsUpdate = now;
+            }
+        }
+
+        function connect() {
+            if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) {
+                return;
+            }
+
+            setStatus('connecting', 'Connecting...');
+            showOverlay('Connecting to ' + wsUrl + '...');
+            metaReceived = false;
+
+            try {
+                ws = new WebSocket(wsUrl);
+                ws.binaryType = 'arraybuffer';
+            } catch(e) {
+                setStatus('error', 'Connection failed');
+                showOverlay('Failed to connect: ' + e.message);
+                scheduleReconnect();
+                return;
+            }
+
+            ws.onopen = function() {
+                setStatus('connected', 'Connected');
+                reconnectDelay = 1000;
+                if (token) {
+                    ws.send(JSON.stringify({token: token}));
+                }
+            };
+
+            ws.onmessage = function(event) {
+                if (!metaReceived) {
+                    // First message should be JSON meta
+                    if (typeof event.data === 'string') {
+                        try {
+                            const meta = JSON.parse(event.data);
+                            if (meta.type === 'meta') {
+                                canvas.width = meta.width;
+                                canvas.height = meta.height;
+                                resInfo.textContent = meta.width + '×' + meta.height + ' @ ' + meta.fps + 'fps';
+                                metaReceived = true;
+                                hideOverlay();
+                                return;
+                            }
+                        } catch(e) { /* not JSON, treat as frame */ }
+                    }
+                    metaReceived = true;
+                    hideOverlay();
+                }
+
+                if (paused) return;
+
+                // Binary JPEG frame
+                if (event.data instanceof ArrayBuffer) {
+                    const blob = new Blob([event.data], {type: 'image/jpeg'});
+                    const url = URL.createObjectURL(blob);
+                    const img = new Image();
+                    img.onload = function() {
+                        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                        URL.revokeObjectURL(url);
+                        frameCount++;
+                        updateFps();
+                    };
+                    img.onerror = function() { URL.revokeObjectURL(url); };
+                    img.src = url;
+                }
+            };
+
+            ws.onclose = function(event) {
+                setStatus('error', 'Disconnected');
+                showOverlay('Connection closed (code: ' + event.code + '). Reconnecting...');
+                fpsCounter.textContent = '0 FPS';
+                scheduleReconnect();
+            };
+
+            ws.onerror = function() {
+                setStatus('error', 'Error');
+            };
+        }
+
+        function disconnect() {
+            if (reconnectTimer) {
+                clearTimeout(reconnectTimer);
+                reconnectTimer = null;
+            }
+            if (ws) {
+                ws.onclose = null;
+                ws.close();
+                ws = null;
+            }
+        }
+
+        function scheduleReconnect() {
+            if (reconnectTimer) return;
+            reconnectTimer = setTimeout(function() {
+                reconnectTimer = null;
+                connect();
+                reconnectDelay = Math.min(reconnectDelay * 1.5, maxReconnectDelay);
+            }, reconnectDelay);
+        }
+
+        // Pause / Resume
+        btnPause.addEventListener('click', function() {
+            paused = !paused;
+            this.textContent = paused ? '▶ Resume' : '⏸ Pause';
+            this.classList.toggle('active', paused);
+        });
+
+        // Fullscreen
+        btnFullscreen.addEventListener('click', function() {
+            if (document.fullscreenElement) {
+                document.exitFullscreen();
+            } else {
+                document.documentElement.requestFullscreen();
+            }
+        });
+
+        document.addEventListener('fullscreenchange', function() {
+            btnFullscreen.textContent = document.fullscreenElement ? '⛶ Exit' : '⛶ Fullscreen';
+        });
+
+        // Reconnect
+        btnReconnect.addEventListener('click', function() {
+            disconnect();
+            reconnectDelay = 1000;
+            connect();
+        });
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'f' || e.key === 'F') btnFullscreen.click();
+            if (e.key === ' ') { e.preventDefault(); btnPause.click(); }
+            if (e.key === 'r' || e.key === 'R') btnReconnect.click();
+        });
+
+        // Start
+        connect();
+    })();
+    </script>
+</body>
+</html>

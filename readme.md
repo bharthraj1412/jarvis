@@ -17,11 +17,12 @@ Whether you're running DevSecOps, scheduling tasks, automating UI clicks, or cha
 ## ⚡ Core Features
 
 - 🎙️ **Real-time Voice & Vision:** Ultra-low latency conversation coupled with real-time screen processing and webcam vision.
+- 📺 **Live Screen Sharing:** Real-time WebSocket-based desktop broadcasting via native UI viewer at high frame rates (`mss` powered).
 - 🧠 **Multi-Backend AI:** Intelligent routing between Gemini, Anthropic, OpenAI, Mistral, NVIDIA NIM, and 100% offline, privacy-first **Ollama**.
 - 🛠️ **System Control & Automation:** Launch apps, manage files, fetch system telemetry, execute terminal commands, and perform Python-native mouse/keyboard automation.
 - 🫂 **Sub-Agent Delegation:** Spin up isolated sub-agents mimicking specialized roles (Coder, Reviewer, Devops, Sysadmin) to handle multi-step workflows.
-- 💾 **Persistent Hyper-Memory:** ChromaDB vector embeddings prevent context-amnesia. JARVIS actively remembers your projects, relationships, and history between reboots.
-- 🛡️ **Red Teaming & Security:** Built for DevSecOps users with `ALLOW_ALL` / `CONFIRM_ALL` permission modes, persistent audit logs, and strict Scope Enforcement.
+- 💾 **Persistent Hyper-Memory & History:** SQLite-backed complete session tracking. ChromaDB vector embeddings prevent context-amnesia. JARVIS actively remembers your projects, relationships, and history between reboots.
+- 🛡️ **Red Teaming & Security:** Built for DevSecOps users with `ALLOW_ALL` / `CONFIRM_ALL` permission modes, persistent JSONL audit logs, and strict Scope Enforcement.
 
 ---
 

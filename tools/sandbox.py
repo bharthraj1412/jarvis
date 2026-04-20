@@ -4,6 +4,8 @@ Code sandbox for JARVIS MK37.
 Executes code in a subprocess with timeout protection.
 Cross-platform: Windows, Linux, macOS.
 """
+from __future__ import annotations
+
 import subprocess
 import sys
 import tempfile

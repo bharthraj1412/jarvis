@@ -1,5 +1,7 @@
 # gemini_backend.py
 """Gemini backend using the modern google.genai SDK."""
+from __future__ import annotations
+
 import os
 from google import genai
 from config.models import get_model

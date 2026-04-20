@@ -13,7 +13,9 @@ Includes:
   - Skill tools (run/list skills)
   - Sub-agent tools (spawn/check/list agents)
   - Memory tools (save/delete/search/list)
+  - Screen sharing tools (start/stop/status/monitors)
 """
+from __future__ import annotations
 
 import json
 import asyncio
@@ -337,6 +339,33 @@ TOOL_SCHEMAS = [
         "parameters": {
             "action": {"type": "string", "required": False, "description": "What to check: full (default), cpu, memory, disk, processes, quick"},
         },
+    },
+
+    # ── Screen Sharing ────────────────────────────────────────────────────
+    {
+        "name": "screen_share_start",
+        "description": "Start real-time screen sharing over WebSocket. Opens a viewer page in the browser.",
+        "parameters": {
+            "port": {"type": "integer", "required": False, "description": "WebSocket port (default: 8765)"},
+            "monitor": {"type": "integer", "required": False, "description": "Monitor index: 0=all, 1=primary (default: 1)"},
+            "fps": {"type": "integer", "required": False, "description": "Frames per second (default: 10, max: 30)"},
+            "quality": {"type": "integer", "required": False, "description": "JPEG quality 10-100 (default: 60)"},
+        },
+    },
+    {
+        "name": "screen_share_stop",
+        "description": "Stop the active screen sharing session.",
+        "parameters": {},
+    },
+    {
+        "name": "screen_share_status",
+        "description": "Get the current screen sharing status (running, viewer count, FPS, etc.).",
+        "parameters": {},
+    },
+    {
+        "name": "list_monitors",
+        "description": "List all available monitors with resolution and position.",
+        "parameters": {},
     },
 ]
 
@@ -790,6 +819,28 @@ def execute_tool(name: str, args: dict) -> str:
         elif name == "system_monitor":
             from actions.system_monitor import system_monitor
             return system_monitor(parameters=args)
+
+        # ── Screen Sharing ────────────────────────────────────────────────
+        elif name == "screen_share_start":
+            from actions.screen_share import start_sharing
+            return start_sharing(
+                port=args.get("port", 8765),
+                monitor=args.get("monitor", 1),
+                fps=args.get("fps", 10),
+                quality=args.get("quality", 60),
+            )
+
+        elif name == "screen_share_stop":
+            from actions.screen_share import stop_sharing
+            return stop_sharing()
+
+        elif name == "screen_share_status":
+            from actions.screen_share import get_status
+            return json.dumps(get_status(), indent=2)
+
+        elif name == "list_monitors":
+            from actions.screen_share import list_monitors
+            return json.dumps(list_monitors(), indent=2)
 
         else:
             return f"ERROR: Unknown tool '{name}'"

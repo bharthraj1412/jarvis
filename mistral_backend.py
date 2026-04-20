@@ -1,4 +1,6 @@
 # mistral_backend.py
+from __future__ import annotations
+
 import os
 from openai import OpenAI
 from config.models import get_model

@@ -17,3 +17,8 @@ pyperclip>=1.8.2
 pyyaml>=6.0
 
 mistralai>=2.4.0
+
+# Screen Sharing
+mss>=10.0.0
+websockets>=14.0
+Pillow>=10.0.0

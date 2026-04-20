@@ -1,5 +1,6 @@
 # redteam/report.py
 # Generates professional pentest reports as markdown or PDF
+from __future__ import annotations
 
 from datetime import datetime
 

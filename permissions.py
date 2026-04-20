@@ -13,9 +13,11 @@ Modes:
 Audit log: ~/.jarvis/audit.log (every tool call logged with timestamp)
 Per-tool deny: JARVIS_DENY_TOOLS env var (comma-separated tool names)
 """
+from __future__ import annotations
 
-import os
 import json
+import os
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -72,7 +74,7 @@ class PermissionPolicy:
     deny_prefixes: tuple = ()
     audit_enabled: bool = True
 
-    def check(self, tool_name: str, args: dict = None) -> bool:
+    def check(self, tool_name: str, args: dict | None = None) -> bool:
         """
         Check if a tool is allowed to execute.
 
@@ -80,41 +82,44 @@ class PermissionPolicy:
             True if allowed, False if denied.
         """
         lowered = tool_name.lower()
+        start_ms = int(time.time() * 1000)
 
         # Hard deny list (static + env-based)
         if lowered in self.deny_names:
-            self._audit(tool_name, args, "DENIED (deny_list)")
+            self._audit(tool_name, args, "DENIED (deny_list)", start_ms)
             return False
         for prefix in self.deny_prefixes:
             if lowered.startswith(prefix):
-                self._audit(tool_name, args, "DENIED (prefix)")
+                self._audit(tool_name, args, "DENIED (prefix)", start_ms)
                 return False
 
         # Mode-based checks
         if self.mode == PermissionMode.ALLOW_ALL:
-            self._audit(tool_name, args, "ALLOWED")
+            self._audit(tool_name, args, "ALLOWED", start_ms)
             return True
 
         if self.mode == PermissionMode.CONFIRM_DESTRUCTIVE:
             if lowered in DESTRUCTIVE_TOOLS:
                 result = self._confirm(tool_name, args)
-                self._audit(tool_name, args, "CONFIRMED" if result else "REJECTED")
+                decision = "CONFIRMED" if result else "REJECTED"
+                self._audit(tool_name, args, decision, start_ms)
                 return result
-            self._audit(tool_name, args, "ALLOWED")
+            self._audit(tool_name, args, "ALLOWED", start_ms)
             return True
 
         if self.mode == PermissionMode.CONFIRM_ALL:
             if lowered in ALWAYS_ALLOWED:
-                self._audit(tool_name, args, "ALLOWED (safe)")
+                self._audit(tool_name, args, "ALLOWED (safe)", start_ms)
                 return True
             result = self._confirm(tool_name, args)
-            self._audit(tool_name, args, "CONFIRMED" if result else "REJECTED")
+            decision = "CONFIRMED" if result else "REJECTED"
+            self._audit(tool_name, args, decision, start_ms)
             return result
 
-        self._audit(tool_name, args, "ALLOWED (fallback)")
+        self._audit(tool_name, args, "ALLOWED (fallback)", start_ms)
         return True
 
-    def _confirm(self, tool_name: str, args: dict = None) -> bool:
+    def _confirm(self, tool_name: str, args: dict | None = None) -> bool:
         """Ask user for confirmation. In auto-allow mode this is never called."""
         try:
             response = input(f"[JARVIS] Allow tool '{tool_name}'? (y/N): ").strip().lower()
@@ -122,20 +127,36 @@ class PermissionPolicy:
         except (EOFError, KeyboardInterrupt):
             return False
 
-    def _audit(self, tool_name: str, args: dict = None, decision: str = ""):
-        """Log tool execution to the audit trail."""
+    def _audit(self, tool_name: str, args: dict | None = None, decision: str = "", start_ms: int = 0) -> None:
+        """Log tool execution to the structured audit writer, with plain-text fallback."""
         if not self.audit_enabled:
             return
+
+        latency = int(time.time() * 1000) - start_ms if start_ms else 0
+
+        # Try the new structured audit writer first
+        try:
+            from history.audit_writer import write_audit
+            write_audit(
+                tool=tool_name,
+                args=args if isinstance(args, dict) else {},
+                decision=decision,
+                latency_ms=latency,
+            )
+            return
+        except Exception:
+            pass  # Fall back to plain text
+
+        # Fallback: plain-text audit log
         try:
             AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             args_summary = ""
             if args:
-                # Truncate large args for log readability
                 try:
                     args_str = json.dumps(args, default=str)
                     args_summary = args_str[:200]
-                except Exception:
+                except (TypeError, ValueError):
                     args_summary = str(args)[:200]
             log_line = f"[{timestamp}] {decision:20s} | {tool_name:25s} | {args_summary}\n"
             with open(AUDIT_LOG_PATH, "a", encoding="utf-8") as f:
@@ -163,7 +184,7 @@ def _load_audit_setting() -> bool:
     return val not in ("false", "0", "no", "off")
 
 
-# ── Global singleton ──────────────────────────────────────────────────────────
+# ── Global singleton ──────────────────────────────────────────────────────
 PERMISSIONS = PermissionPolicy(
     mode=_load_permission_mode(),
     deny_names=_load_deny_list(),

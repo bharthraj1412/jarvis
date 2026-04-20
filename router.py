@@ -1,4 +1,5 @@
 # router.py
+from __future__ import annotations
 """
 Agent router — selects the best LLM backend for each task based on keywords.
 Falls back gracefully if a preferred backend is unavailable.

@@ -1,4 +1,6 @@
 # tools/web.py
+from __future__ import annotations
+
 import httpx
 from duckduckgo_search import DDGS
 

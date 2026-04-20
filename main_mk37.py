@@ -4,11 +4,13 @@ JARVIS MK37 — Multi-backend AI assistant with Claude Cowork architecture.
 Features: Skills, Sub-agents, PC Control, Persistent Memory, Auto-Allow.
 Run this to start the interactive CLI session.
 """
+from __future__ import annotations
 
 import os
 import sys
 import signal
 import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 
 # ── Force UTF-8 encoding on Windows ──────────────────────────────────────────
@@ -68,6 +70,11 @@ HELP_TEXT = """
   /installed-skills  List installed skill packs
   /remove-skill      Remove a skill by name
   /memory <cmd>      Memory operations (search/list)
+  /history           Show last 10 sessions
+  /history search    Semantic search across all sessions
+  /history replay    Inject session as context
+  /history export    Export session to Desktop as .md
+  /history stats     Show database statistics
   /clear             Clear conversation history
   /help              Show this help
   /status            Show active mode and backend info
@@ -460,6 +467,11 @@ def main():
             _handle_memory_command(cmd[7:].strip())
             continue
 
+        # ── History Commands ──────────────────────────────────────────────
+        if cmd.startswith("/history"):
+            _handle_history_command(cmd[8:].strip(), jarvis)
+            continue
+
         # ── Skill Installer Commands ──────────────────────────────────────
         if cmd.startswith("/install-skills"):
             pack_name = user_input[15:].strip()
@@ -521,6 +533,119 @@ def main():
             console.print(f"[bold red]Error:[/] {e}")
             console.print(f"[dim]{traceback.format_exc()}[/]")
             continue
+
+
+def _handle_history_command(args: str, jarvis) -> None:
+    """Handle /history subcommands."""
+    parts = args.strip().split(maxsplit=1)
+    subcmd = parts[0].lower() if parts else ""
+    sub_args = parts[1] if len(parts) > 1 else ""
+
+    try:
+        from history.session_store import SessionStore
+        store = SessionStore()
+    except Exception as e:
+        console.print(f"[red]History engine unavailable: {e}[/]")
+        return
+
+    if subcmd == "" or subcmd == "recent":
+        # Show last 10 sessions
+        sessions = store.recent(10)
+        if not sessions:
+            console.print("[yellow]No sessions recorded yet.[/]")
+            return
+        table = Table(title="Recent Sessions", border_style="bright_blue")
+        table.add_column("Session ID", style="cyan")
+        table.add_column("Started", style="white")
+        table.add_column("Mode", style="yellow")
+        table.add_column("Backend", style="green")
+        table.add_column("Turns", style="dim")
+        table.add_column("Summary", style="white")
+        for s in sessions:
+            ts = s.get("start_ts", 0)
+            dt = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M") if ts else "?"
+            summary = (s.get("summary") or "")[:50]
+            table.add_row(
+                s["id"], dt, s.get("mode", "?"), s.get("backend", "?"),
+                str(s.get("turn_count", 0)), summary,
+            )
+        console.print(table)
+
+    elif subcmd == "search" and sub_args:
+        results = store.search(sub_args, limit=10)
+        if not results:
+            console.print(f"[yellow]No results for '{sub_args}'[/]")
+            return
+        table = Table(title=f"History Search: '{sub_args}'", border_style="green")
+        table.add_column("Session", style="cyan")
+        table.add_column("Role", style="yellow")
+        table.add_column("Tool", style="dim")
+        table.add_column("Content", style="white")
+        for r in results:
+            content = (r.get("content") or "")[:80]
+            table.add_row(
+                r.get("session_id", "?")[:12],
+                r.get("role", "?"),
+                r.get("tool_name") or "-",
+                content,
+            )
+        console.print(table)
+
+    elif subcmd == "replay" and sub_args:
+        session_id = sub_args.strip()
+        try:
+            from history.replay import replay_as_context
+            context = replay_as_context(session_id, store=store)
+            # Inject into working memory
+            jarvis.working_memory.add("user", context)
+            console.print(f"[green]Session {session_id} injected as context ({len(context)} chars).[/]")
+        except ValueError as e:
+            console.print(f"[red]{e}[/]")
+        except Exception as e:
+            console.print(f"[red]Replay error: {e}[/]")
+
+    elif subcmd == "export" and sub_args:
+        session_id = sub_args.strip()
+        try:
+            from history.replay import export_markdown
+            # Export to Desktop
+            desktop = Path.home() / "Desktop"
+            if not desktop.exists():
+                desktop = Path.home()
+            output = desktop / f"jarvis_session_{session_id}.md"
+            export_markdown(session_id, output, store=store)
+            console.print(f"[green]Session exported to: {output}[/]")
+        except ValueError as e:
+            console.print(f"[red]{e}[/]")
+        except Exception as e:
+            console.print(f"[red]Export error: {e}[/]")
+
+    elif subcmd == "stats":
+        stats = store.stats()
+        table = Table(title="History Statistics", border_style="bright_blue")
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="white")
+        table.add_row("Total Sessions", str(stats.get("total_sessions", 0)))
+        table.add_row("Total Turns", str(stats.get("total_turns", 0)))
+        table.add_row("Tool Calls", str(stats.get("tool_calls", 0)))
+        table.add_row("Avg Turns/Session", str(stats.get("avg_turns_per_session", 0)))
+        table.add_row("DB Size", f"{stats.get('db_size_kb', 0)} KB")
+        dist = stats.get("backend_distribution", {})
+        if dist:
+            table.add_row("Backend Usage", ", ".join(f"{k}: {v}" for k, v in dist.items()))
+        first = stats.get("first_session_ts")
+        if first:
+            dt = datetime.fromtimestamp(first, tz=timezone.utc).strftime("%Y-%m-%d")
+            table.add_row("First Session", dt)
+        console.print(table)
+
+    else:
+        console.print("[yellow]Usage:[/]")
+        console.print("  /history                  — Show last 10 sessions")
+        console.print("  /history search <query>   — Search across all sessions")
+        console.print("  /history replay <id>      — Inject session as context")
+        console.print("  /history export <id>      — Export session to Desktop")
+        console.print("  /history stats            — Show database statistics")
 
 
 if __name__ == "__main__":

@@ -1,4 +1,6 @@
 # nvidia_backend.py
+from __future__ import annotations
+
 from openai import OpenAI  # NIM uses OpenAI-compatible API
 import os
 from config.models import get_model

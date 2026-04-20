@@ -1,4 +1,6 @@
 # anthropic_backend.py
+from __future__ import annotations
+
 import anthropic
 from config.models import get_model
 
